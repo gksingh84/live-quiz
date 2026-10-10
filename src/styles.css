@@ -528,15 +528,80 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .compact-modal-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 14px; }
 .compact-modal-actions .button { min-height: 46px; font-size: 15px; padding: 0 22px; border-radius: 12px; }
 
-@media (max-width: 780px) {
-  .sidebar { width: 72px; min-width: 72px; padding: 20px 10px 14px; }
+/* ==========================================================================
+   RESPONSIVE DESIGN & MOBILE/TABLET COMPATIBILITY
+   ========================================================================== */
+
+/* Tablets & Laptops (max-width: 1024px) */
+@media (max-width: 1024px) {
+  .topbar { padding: 0 24px; }
+  .student-home-content, .overview-content, .panel-content { padding: 24px; }
+  .worksheet-grid { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+  .metrics-grid { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+}
+
+/* Medium Tablets & Mobile Screens (max-width: 850px) */
+@media (max-width: 850px) {
+  .sidebar { width: 72px; min-width: 72px; padding: 20px 8px 14px; align-items: center; }
+  .sidebar-brand { padding: 0 0 28px; justify-content: center; }
+  .sidebar-brand span, .sidebar-label, .nav-item > span, .nav-item small, .profile-copy, .sidebar-footnote, .brand-dot { display: none !important; }
+  .nav-item { width: 48px; height: 48px; justify-content: center; padding: 0; border-radius: 12px; }
+  .teacher-profile { justify-content: center; padding: 10px 0; border-top: 1px solid #e2e8f0; width: 100%; }
+  .teacher-profile .avatar { margin: 0 auto; }
+  
   .login-layout { grid-template-columns: 1fr; }
-  .login-side { min-height: 0; padding: 28px 24px; }
-  .login-main { padding: 30px 20px; }
-  .student-quiz-wrap, .student-home-content { width: calc(100% - 30px); }
-  .student-question-card { padding: 24px 20px; }
-  .student-question-card h2 { font-size: 22px; }
-  .student-option { min-height: 56px; font-size: 16px; padding: 12px 14px; }
+  .login-side { min-height: 0; padding: 32px 24px; }
+  .login-copy { padding: 24px 0; }
+  .login-copy h1 { font-size: 36px; }
+  .login-main { padding: 32px 20px; }
+
+  .topbar { padding: 0 18px; height: 64px; }
+  .today-label { display: none; }
+
+  .student-quiz-wrap, .student-home-content { width: 100%; padding: 20px 16px; }
+  .editor-aside { width: 100%; }
+}
+
+/* Small Mobile Screens (max-width: 600px) */
+@media (max-width: 600px) {
+  .sidebar { width: 60px; min-width: 60px; padding: 16px 4px 10px; }
+  .nav-item { width: 42px; height: 42px; }
+  .brand-mark { width: 36px; height: 36px; border-radius: 10px; }
+  
+  .topbar { height: 56px; padding: 0 12px; }
+  .breadcrumb { font-size: 13px; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .topbar-actions { gap: 6px; }
+  .topbar-actions .button { font-size: 12px; padding: 0 10px; min-height: 32px; gap: 4px; }
+
+  .mode-choice { flex-direction: column; gap: 8px; }
+  .mode-choice button { width: 100%; min-height: 44px; }
+
+  .student-quiz-tile { padding: 12px 14px; gap: 10px; flex-wrap: wrap; }
+  .student-tile-copy strong { font-size: 16px; }
+  .student-tile-copy span { font-size: 13px; }
+
+  .student-welcome { flex-direction: column; align-items: flex-start; gap: 16px; }
+  .student-welcome h1 { font-size: 26px; }
+  .student-welcome p { font-size: 14px; }
+  .welcome-mark { width: 50px; height: 50px; }
+
+  .student-question-card { padding: 18px 14px; border-radius: 16px; }
+  .student-question-card h2 { font-size: 19px; }
+  .student-option { min-height: 50px; font-size: 15px; padding: 10px 12px; border-radius: 12px; }
+
+  .review-question-card { padding: 14px 16px; border-radius: 16px; }
+  .review-header-card { padding: 24px 16px !important; }
+
+  .worksheet-grid { grid-template-columns: 1fr; }
+  .metrics-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
+
+  .word-doc-modal-overlay { padding: 10px; }
+  .word-doc-modal-container { max-height: 96vh; border-radius: 14px; }
+  .word-doc-modal-header { padding: 10px 14px; }
+  .word-doc-modal-header h3 { font-size: 15px; }
+
+  .field input, .field textarea, .field select { padding: 10px 12px; font-size: 15px; }
+  .button { min-height: 44px; padding: 0 16px; font-size: 15px; }
 }
 
 /* Question Image Box & Alignment */
