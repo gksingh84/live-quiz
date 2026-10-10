@@ -21,18 +21,21 @@ const rawSecret = process.env.SESSION_SECRET;
 const secret = rawSecret && rawSecret.length >= 32
   ? rawSecret
   : (rawSecret
-      ? createHmac('sha256', 'livequiz-secret-salt').update(rawSecret).digest('hex')
-      : 'default-livequiz-secure-session-secret-key-32-chars-minimum-fallback');
+    ? createHmac('sha256', 'livequiz-secret-salt').update(rawSecret).digest('hex')
+    : 'default-livequiz-secure-session-secret-key-32-chars-minimum-fallback');
 
 app.set('trust proxy', 1);
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
-  contentSecurityPolicy: { directives: {
-    styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
-    fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
-  } },
+  contentSecurityPolicy: {
+    directives: {
+      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+      fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
+    }
+  },
 }));
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '25mb' }));
+app.use(express.urlencoded({ limit: '25mb', extended: true }));
 app.use(cookieParser());
 app.use('/api/auth', rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: 'draft-7', legacyHeaders: false }));
 
@@ -75,10 +78,10 @@ const questionInput = z.object({
 const quizInput = z.object({
   title: z.string().trim().min(1).max(120),
   mode: z.enum(['LIVE', 'SELF_PACED']),
-  timeLimitSeconds: z.number().int().min(60).max(86400).nullable(),
+  timeLimitSeconds: z.number().int().nullable().optional(),
   showResults: z.boolean(),
   questions: z.array(questionInput).min(1).max(100),
-}).refine((quiz) => quiz.mode === 'LIVE' || quiz.timeLimitSeconds !== null, 'Timed quizzes need a time limit.');
+});
 const parse = <Output, Def extends z.ZodTypeDef = z.ZodTypeDef, Input = any>(schema: z.ZodType<Output, Def, Input>, value: unknown): Output => schema.parse(value);
 const errorResponse = (res: Response, error: unknown) => {
   if (error instanceof z.ZodError) return res.status(400).json({ error: error.issues[0]?.message ?? 'Invalid request.' });
@@ -205,7 +208,7 @@ app.post('/api/auth/student', async (req, res) => {
       for (const s of activeStudents) {
         if (await bcrypt.compare(data.passkey.toUpperCase(), s.passkeyHash)) {
           student = s;
-          await prisma.student.update({ where: { id: s.id }, data: { passkeyLookup: lookupHash } }).catch(() => {});
+          await prisma.student.update({ where: { id: s.id }, data: { passkeyLookup: lookupHash } }).catch(() => { });
           break;
         }
       }
@@ -991,12 +994,14 @@ app.get('/api/quizzes', adminOnly, async (_req, res) => {
 app.post('/api/quizzes', adminOnly, async (req, res) => {
   try {
     const data = parse(quizInput, req.body);
-    const quiz = await prisma.quiz.create({ data: {
-      title: data.title, mode: data.mode as QuizMode,
-      timeLimitSeconds: data.mode === 'LIVE' ? null : data.timeLimitSeconds,
-      showResults: data.showResults,
-      questions: { create: data.questions.map((question, position) => ({ prompt: question.prompt, marks: question.marks, imageUrl: question.imageUrl ?? null, type: question.type ?? 'MCQ', position, options: { create: question.options.map((option, optionPosition) => ({ ...option, position: optionPosition })) } })) },
-    } });
+    const quiz = await prisma.quiz.create({
+      data: {
+        title: data.title, mode: data.mode as QuizMode,
+        timeLimitSeconds: data.mode === 'LIVE' ? null : data.timeLimitSeconds,
+        showResults: data.showResults,
+        questions: { create: data.questions.map((question, position) => ({ prompt: question.prompt, marks: question.marks, imageUrl: question.imageUrl ?? null, type: question.type ?? 'MCQ', position, options: { create: question.options.map((option, optionPosition) => ({ ...option, position: optionPosition })) } })) },
+      }
+    });
     res.status(201).json({ quiz });
   } catch (error) { errorResponse(res, error); }
 });
@@ -1013,16 +1018,50 @@ app.put('/api/quizzes/:id', adminOnly, async (req, res) => {
     const data = parse(quizInput, req.body);
     const existing = await prisma.quiz.findUnique({ where: { id }, include: { _count: { select: { attempts: true } } } });
     if (!existing) return res.status(404).json({ error: 'Quiz not found.' });
-    if (existing.status === 'ACTIVE' || existing._count.attempts > 0) return res.status(409).json({ error: 'A quiz with active or submitted attempts cannot be edited.' });
+    if (existing.status === 'ACTIVE') return res.status(409).json({ error: 'Please stop or close the active quiz before editing.' });
     await prisma.$transaction(async (tx) => {
+      if (existing._count.attempts > 0) {
+        const attempts = await tx.attempt.findMany({ where: { quizId: id }, select: { id: true } });
+        const attemptIds = attempts.map((attempt) => attempt.id);
+        if (attemptIds.length > 0) {
+          await tx.answer.deleteMany({ where: { attemptId: { in: attemptIds } } });
+          await tx.attempt.deleteMany({ where: { quizId: id } });
+        }
+      }
       await tx.question.deleteMany({ where: { quizId: id } });
-      await tx.quiz.update({ where: { id }, data: {
-        title: data.title, mode: data.mode as QuizMode, timeLimitSeconds: data.mode === 'LIVE' ? null : data.timeLimitSeconds,
-        showResults: data.showResults, currentQuestionIndex: 0, currentAnswerRevealed: false,
-        questions: { create: data.questions.map((question, position) => ({ prompt: question.prompt, marks: question.marks, imageUrl: question.imageUrl ?? null, type: question.type ?? 'MCQ', position, options: { create: question.options.map((option, optionPosition) => ({ ...option, position: optionPosition })) } })) },
-      } });
+      await tx.quiz.update({
+        where: { id }, data: {
+          title: data.title, mode: data.mode as QuizMode, timeLimitSeconds: data.mode === 'LIVE' ? null : data.timeLimitSeconds,
+          showResults: data.showResults, currentQuestionIndex: 0, currentAnswerRevealed: false,
+          questions: { create: data.questions.map((question, position) => ({ prompt: question.prompt, marks: question.marks, imageUrl: question.imageUrl ?? null, type: question.type ?? 'MCQ', position, options: { create: question.options.map((option, optionPosition) => ({ ...option, position: optionPosition })) } })) },
+        }
+      });
     }, { timeout: 30000, maxWait: 10000 });
     res.json({ ok: true });
+  } catch (error) { errorResponse(res, error); }
+});
+
+app.patch('/api/quizzes/:id/mode', adminOnly, async (req, res) => {
+  try {
+    const id = parse(objectId, req.params.id);
+    const { mode, timeLimitSeconds } = parse(z.object({
+      mode: z.enum(['LIVE', 'SELF_PACED']),
+      timeLimitSeconds: z.number().int().nullable().optional(),
+    }), req.body);
+
+    const quiz = await prisma.quiz.findUnique({ where: { id } });
+    if (!quiz) return res.status(404).json({ error: 'Quiz not found.' });
+
+    await prisma.quiz.update({
+      where: { id },
+      data: {
+        mode: mode as QuizMode,
+        timeLimitSeconds: mode === 'LIVE' ? null : (timeLimitSeconds !== undefined ? timeLimitSeconds : quiz.timeLimitSeconds),
+      }
+    });
+
+    res.json({ ok: true });
+    void publishQuizState(id);
   } catch (error) { errorResponse(res, error); }
 });
 app.delete('/api/quizzes/:id', adminOnly, async (req, res) => {
@@ -1169,18 +1208,24 @@ app.get('/api/quizzes/:id/results', adminOnly, async (req, res) => {
 
 app.get('/api/student/quizzes', studentOnly, async (req: AuthRequest, res) => {
   const studentId = req.session!.id;
-  const quizzes = await prisma.quiz.findMany({ where: { OR: [
-    { status: 'ACTIVE' },
-    { attempts: { some: { studentId } } },
-  ] }, orderBy: { createdAt: 'desc' }, include: { questions: { select: { marks: true } }, _count: { select: { questions: true } }, attempts: { where: { studentId }, select: { status: true, deadlineAt: true, score: true, submittedAt: true } } } });
-  res.json({ quizzes: quizzes.map((quiz) => {
-    const totalMarks = quiz.questions.reduce((sum, q) => sum + q.marks, 0);
-    return {
-      id: quiz.id, title: quiz.title, mode: quiz.mode, status: quiz.status,
-      timeLimitSeconds: quiz.timeLimitSeconds, questionCount: quiz._count.questions,
-      totalMarks, attempt: quiz.attempts[0] ?? null
-    };
-  }) });
+  const quizzes = await prisma.quiz.findMany({
+    where: {
+      OR: [
+        { status: 'ACTIVE' },
+        { attempts: { some: { studentId } } },
+      ]
+    }, orderBy: { createdAt: 'desc' }, include: { questions: { select: { marks: true } }, _count: { select: { questions: true } }, attempts: { where: { studentId }, select: { status: true, deadlineAt: true, score: true, submittedAt: true } } }
+  });
+  res.json({
+    quizzes: quizzes.map((quiz) => {
+      const totalMarks = quiz.questions.reduce((sum, q) => sum + q.marks, 0);
+      return {
+        id: quiz.id, title: quiz.title, mode: quiz.mode, status: quiz.status,
+        timeLimitSeconds: quiz.timeLimitSeconds, questionCount: quiz._count.questions,
+        totalMarks, attempt: quiz.attempts[0] ?? null
+      };
+    })
+  });
 });
 app.get('/api/student/quizzes/:id', studentOnly, async (req: AuthRequest, res) => {
   try {
@@ -1193,7 +1238,7 @@ app.get('/api/student/quizzes/:id', studentOnly, async (req: AuthRequest, res) =
       attempt = await prisma.attempt.upsert({
         where: { quizId_studentId: { quizId: id, studentId: req.session!.id } },
         update: {},
-        create: { quizId: id, studentId: req.session!.id, deadlineAt: quiz.mode === 'SELF_PACED' ? new Date(now.getTime() + (quiz.timeLimitSeconds ?? 0) * 1000) : null },
+        create: { quizId: id, studentId: req.session!.id, deadlineAt: (quiz.mode === 'SELF_PACED' && quiz.timeLimitSeconds !== null) ? new Date(now.getTime() + quiz.timeLimitSeconds * 1000) : null },
       });
     }
     const state = await studentQuizState(id, req.session!.id);
@@ -1255,6 +1300,273 @@ io.on('connection', (socket) => {
   });
 });
 
+// --- WORKSHEET & QUESTION PAPER ROUTES ---
+
+const db = prisma as any;
+
+app.get('/api/worksheets', authenticate(), async (req: AuthRequest, res) => {
+  try {
+    if (req.session?.role === 'admin') {
+      const worksheets = await db.worksheetPaper.findMany({
+        orderBy: { createdAt: 'desc' },
+        include: {
+          _count: { select: { submissions: true } },
+        },
+      });
+      return res.json({ worksheets });
+    }
+
+    const worksheets = await db.worksheetPaper.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: {
+        submissions: {
+          where: { studentId: req.session!.id },
+          select: { id: true, status: true, score: true, remarks: true, submittedAt: true, gradedAt: true, images: true },
+        },
+      },
+    });
+
+    const studentWorksheets = worksheets.map((w: any) => ({
+      ...w,
+      submission: w.submissions[0] ?? null,
+      submissions: undefined,
+    }));
+
+    res.json({ worksheets: studentWorksheets });
+  } catch (error) { errorResponse(res, error); }
+});
+
+app.get('/api/worksheets/:id', authenticate(), async (req: AuthRequest, res) => {
+  try {
+    const id = req.params.id as string;
+    const worksheet = await db.worksheetPaper.findUnique({
+      where: { id },
+      include: {
+        submissions: req.session?.role === 'admin'
+          ? {
+            include: { student: { select: { id: true, name: true } } },
+            orderBy: { submittedAt: 'desc' },
+          }
+          : {
+            where: { studentId: req.session!.id },
+          },
+      },
+    });
+
+    if (!worksheet) return res.status(404).json({ error: 'Question paper not found.' });
+
+    if (req.session?.role === 'student') {
+      const submission = worksheet.submissions?.[0] ?? null;
+      return res.json({ worksheet: { ...worksheet, submission, submissions: undefined } });
+    }
+
+    res.json({ worksheet });
+  } catch (error) { errorResponse(res, error); }
+});
+
+app.post('/api/worksheets', adminOnly, async (req, res) => {
+  try {
+    const schema = z.object({
+      title: z.string().trim().min(1).max(200),
+      subject: z.string().trim().max(100).optional(),
+      grade: z.string().trim().max(50).optional(),
+      totalMarks: z.number().int().min(1).default(100),
+      content: z.string().trim().min(1),
+      status: z.enum(['DRAFT', 'PUBLISHED', 'ARCHIVED']).default('PUBLISHED'),
+    });
+    const data = parse(schema, req.body);
+    const paper = await db.worksheetPaper.create({ data });
+    res.status(201).json({ paper });
+  } catch (error) { errorResponse(res, error); }
+});
+
+app.post('/api/worksheets/ai-generate', adminOnly, async (req, res) => {
+  try {
+    const schema = z.object({
+      subject: z.string().trim().min(1).max(100),
+      grade: z.string().trim().min(1).max(50),
+      topic: z.string().trim().min(1).max(300),
+      subtopics: z.string().trim().max(500).optional(),
+      questionCount: z.number().int().min(3).max(30).default(10),
+      totalMarks: z.number().int().min(10).max(200).default(100),
+      details: z.string().trim().max(500).optional(),
+      apiKey: z.string().trim().optional(),
+      provider: z.enum(['auto', 'gemini', 'openai']).optional(),
+    });
+    const data = parse(schema, req.body);
+
+    let docHtml = '';
+    const generated = await generateAIQuiz({
+      mode: 'SELF_PACED',
+      subject: data.subject,
+      grade: data.grade,
+      topic: data.topic,
+      subtopics: data.subtopics,
+      difficulty: 'Moderate',
+      questionCount: data.questionCount,
+      questionType: 'ALL',
+      details: `Create a formal printable Word-document style Question Paper for ${data.subject} (${data.grade}) on "${data.topic}". Total Marks: ${data.totalMarks}. ${data.details ?? ''}`,
+      apiKey: data.apiKey,
+      provider: data.provider,
+    });
+
+    if (generated && generated.questions?.length > 0) {
+      docHtml = `
+<div style="font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.5; color: #1e293b; width: 100%;">
+  <div style="text-align: center; border-bottom: 2px solid #0f172a; padding-bottom: 10px; margin-bottom: 14px;">
+    <h1 style="margin: 0; font-size: 22px; text-transform: uppercase; color: #0f172a; letter-spacing: 0.5px;">${data.subject.toUpperCase()} QUESTION PAPER</h1>
+    <h3 style="margin: 4px 0 0 0; color: #475569; font-weight: 500; font-size: 15px;">Grade: ${data.grade} &nbsp;|&nbsp; Topic: ${data.topic}</h3>
+    <div style="display: flex; justify-content: space-between; margin-top: 10px; font-weight: 600; font-size: 13px; color: #334155;">
+      <span>Time Allowed: 60 Minutes</span>
+      <span>Total Marks: ${data.totalMarks}</span>
+    </div>
+  </div>
+
+  <div style="background-color: #f8fafc; border-left: 4px solid #0284c7; padding: 10px 14px; margin-bottom: 18px; font-size: 13px; border-radius: 4px;">
+    <strong style="color: #0369a1;">Instructions for Students:</strong>
+    <ul style="margin: 4px 0 0 18px; padding-left: 16px; color: #334155;">
+      <li>Solve these questions neatly on paper in your physical workbook.</li>
+      <li>Write your answers with clear question numbers matching the paper.</li>
+      <li>Upload clear photos/scans of your answer sheet pages when finished.</li>
+    </ul>
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 12px;">
+${generated.questions.map((q: any, idx: number) => `
+    <p style="margin: 0 0 12px 0; font-size: 15px; border-bottom: 1px dashed #cbd5e1; padding-bottom: 8px;">
+      <strong>Q${idx + 1}.</strong> ${q.prompt} <span style="color: #64748b; font-size: 13px; font-weight: normal;">[${q.marks ?? 1} Mark${(q.marks ?? 1) > 1 ? 's' : ''}]</span>
+      ${q.options && q.options.length > 0 ? `
+      <br/>
+      <span style="display: block; margin-left: 20px; margin-top: 6px; font-size: 14px; color: #334155; font-weight: normal;">
+        ${q.options.map((opt: any, oIdx: number) => `(${String.fromCharCode(65 + oIdx)}) ${opt.text}`).join(' &nbsp;&nbsp;&nbsp; ')}
+      </span>
+      ` : ''}
+    </p>
+`).join('')}
+  </div>
+</div>`.trim();
+    } else {
+      docHtml = `
+<div style="font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.5; color: #1e293b; width: 100%;">
+  <div style="text-align: center; border-bottom: 2px solid #0f172a; padding-bottom: 10px; margin-bottom: 14px;">
+    <h1 style="margin: 0; font-size: 22px;">${data.subject.toUpperCase()} WORKSHEET</h1>
+    <h3 style="margin: 4px 0 0 0; color: #475569;">Grade: ${data.grade} | Topic: ${data.topic}</h3>
+  </div>
+  <p style="margin-bottom: 10px;"><strong>Total Marks:</strong> ${data.totalMarks}</p>
+  <p>Solve the questions below in your workbook and upload photos of your answer sheets.</p>
+</div>`.trim();
+    }
+
+    const paper = await db.worksheetPaper.create({
+      data: {
+        title: `${data.subject}: ${data.topic} (${data.grade})`,
+        subject: data.subject,
+        grade: data.grade,
+        totalMarks: data.totalMarks,
+        content: docHtml,
+        status: 'PUBLISHED',
+      },
+    });
+
+    res.status(201).json({ paper });
+  } catch (error) { errorResponse(res, error); }
+});
+
+app.patch('/api/worksheets/:id', adminOnly, async (req, res) => {
+  try {
+    const id = req.params.id as string;
+    const schema = z.object({
+      title: z.string().trim().min(1).max(200).optional(),
+      subject: z.string().trim().max(100).optional(),
+      grade: z.string().trim().max(50).optional(),
+      totalMarks: z.number().int().min(1).optional(),
+      content: z.string().trim().min(1).optional(),
+      status: z.enum(['DRAFT', 'PUBLISHED', 'ARCHIVED']).optional(),
+    });
+    const data = parse(schema, req.body);
+    const paper = await db.worksheetPaper.update({ where: { id }, data });
+    res.json({ paper });
+  } catch (error) { errorResponse(res, error); }
+});
+
+app.delete('/api/worksheets/:id', adminOnly, async (req, res) => {
+  try {
+    const id = req.params.id as string;
+    await db.worksheetPaper.delete({ where: { id } });
+    res.json({ ok: true });
+  } catch (error) { errorResponse(res, error); }
+});
+
+app.post('/api/worksheets/:id/submit', authenticate('student'), async (req: AuthRequest, res) => {
+  try {
+    const paperId = req.params.id as string;
+    const studentId = req.session!.id;
+    const schema = z.object({
+      images: z.array(z.string().min(10)).min(1, 'Please upload at least one image of your answer sheet.'),
+    });
+    const data = parse(schema, req.body);
+
+    const paper = await db.worksheetPaper.findUnique({ where: { id: paperId } });
+    if (!paper || paper.status !== 'PUBLISHED') {
+      return res.status(404).json({ error: 'Question paper not available for submission.' });
+    }
+
+    const submission = await db.worksheetSubmission.upsert({
+      where: { paperId_studentId: { paperId, studentId } },
+      update: {
+        images: JSON.stringify(data.images),
+        status: 'SUBMITTED',
+        submittedAt: new Date(),
+      },
+      create: {
+        paperId,
+        studentId,
+        images: JSON.stringify(data.images),
+        status: 'SUBMITTED',
+      },
+    });
+
+    res.json({ submission });
+  } catch (error) { errorResponse(res, error); }
+});
+
+app.patch('/api/worksheets/submissions/:submissionId/grade', adminOnly, async (req, res) => {
+  try {
+    const id = req.params.submissionId as string;
+    const schema = z.object({
+      score: z.number().int().min(0),
+      remarks: z.string().trim().max(1000).optional(),
+    });
+    const data = parse(schema, req.body);
+
+    const submission = await db.worksheetSubmission.update({
+      where: { id },
+      data: {
+        score: data.score,
+        remarks: data.remarks ?? null,
+        status: 'GRADED',
+        gradedAt: new Date(),
+      },
+      include: { student: { select: { id: true, name: true } } },
+    });
+
+    res.json({ submission });
+  } catch (error) { errorResponse(res, error); }
+});
+
+app.delete('/api/worksheets/submissions/:submissionId/images', adminOnly, async (req, res) => {
+  try {
+    const id = req.params.submissionId as string;
+    const submission = await db.worksheetSubmission.update({
+      where: { id },
+      data: {
+        images: '[]',
+      },
+    });
+    res.json({ submission, ok: true });
+  } catch (error) { errorResponse(res, error); }
+});
+
 app.use(express.static(resolve('dist')));
 app.use((req, res, next) => {
   if (req.path.startsWith('/api/')) return next();
@@ -1262,7 +1574,7 @@ app.use((req, res, next) => {
 });
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => errorResponse(res, error));
 
-setInterval(() => { void finishExpiredAttempts().catch(() => {}); }, 5000).unref();
+setInterval(() => { void finishExpiredAttempts().catch(() => { }); }, 5000).unref();
 async function startServer() {
   if (process.env.ADMIN_EMAIL && process.env.ADMIN_PASSWORD) {
     try {

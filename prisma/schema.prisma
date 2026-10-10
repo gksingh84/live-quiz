@@ -16,14 +16,15 @@ model Admin {
 }
 
 model Student {
-  id            String    @id @default(cuid())
-  name          String
-  passkey       String?
-  passkeyHash   String
-  passkeyLookup String    @unique
-  active        Boolean   @default(true)
-  createdAt     DateTime  @default(now())
-  attempts      Attempt[]
+  id                   String                @id @default(cuid())
+  name                 String
+  passkey              String?
+  passkeyHash          String
+  passkeyLookup        String                @unique
+  active               Boolean               @default(true)
+  createdAt            DateTime              @default(now())
+  attempts             Attempt[]
+  worksheetSubmissions WorksheetSubmission[]
 }
 
 model Quiz {
@@ -107,4 +108,44 @@ enum QuizStatus {
 enum AttemptStatus {
   IN_PROGRESS
   SUBMITTED
+}
+
+model WorksheetPaper {
+  id          String                @id @default(cuid())
+  title       String
+  subject     String?
+  grade       String?
+  totalMarks  Int                   @default(100)
+  content     String
+  status      WorksheetStatus       @default(PUBLISHED)
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+  submissions WorksheetSubmission[]
+}
+
+model WorksheetSubmission {
+  id          String           @id @default(cuid())
+  paperId     String
+  studentId   String
+  images      String           @default("[]")
+  score       Int?
+  remarks     String?
+  status      SubmissionStatus @default(SUBMITTED)
+  submittedAt DateTime         @default(now())
+  gradedAt    DateTime?
+  paper       WorksheetPaper   @relation(fields: [paperId], references: [id], onDelete: Cascade)
+  student     Student          @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([paperId, studentId])
+}
+
+enum WorksheetStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum SubmissionStatus {
+  SUBMITTED
+  GRADED
 }
