@@ -41,7 +41,7 @@ type Role = 'admin' | 'student';
 type Session = { id: string; role: Role };
 type AuthRequest = Request & { session?: Session };
 const cookieOptions = { httpOnly: true, sameSite: 'lax' as const, secure: process.env.NODE_ENV === 'production', maxAge: 1000 * 60 * 60 * 12, path: '/' };
-const passkeyLookup = (passkey: string) => createHmac('sha256', secret).update(passkey.toUpperCase()).digest('hex');
+const passkeyLookup = (passkey: string) => createHmac('sha256', 'livequiz-passkey-lookup-salt').update(passkey.toUpperCase()).digest('hex');
 const signSession = (session: Session) => jwt.sign(session, secret, { expiresIn: '12h' });
 const sendSession = (res: Response, session: Session) => res.cookie(sessionCookie, signSession(session), cookieOptions);
 const authenticate = (role?: Role) => async (req: AuthRequest, res: Response, next: NextFunction) => {
@@ -197,8 +197,24 @@ app.post('/api/auth/admin', async (req, res) => {
 app.post('/api/auth/student', async (req, res) => {
   try {
     const data = parse(z.object({ passkey: z.string().trim().min(4).max(40) }), req.body);
-    const student = await prisma.student.findUnique({ where: { passkeyLookup: passkeyLookup(data.passkey) } });
-    if (!student?.active || !(await bcrypt.compare(data.passkey.toUpperCase(), student.passkeyHash))) return res.status(401).json({ error: 'That passkey was not recognized.' });
+    const lookupHash = passkeyLookup(data.passkey);
+    let student = await prisma.student.findUnique({ where: { passkeyLookup: lookupHash } });
+
+    if (!student) {
+      const activeStudents = await prisma.student.findMany({ where: { active: true } });
+      for (const s of activeStudents) {
+        if (await bcrypt.compare(data.passkey.toUpperCase(), s.passkeyHash)) {
+          student = s;
+          await prisma.student.update({ where: { id: s.id }, data: { passkeyLookup: lookupHash } }).catch(() => {});
+          break;
+        }
+      }
+    }
+
+    if (!student?.active || !(await bcrypt.compare(data.passkey.toUpperCase(), student.passkeyHash))) {
+      return res.status(401).json({ error: 'That passkey was not recognized.' });
+    }
+
     sendSession(res, { id: student.id, role: 'student' });
     res.json({ user: { role: 'student', name: student.name } });
   } catch (error) { errorResponse(res, error); }
