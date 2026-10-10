@@ -1249,8 +1249,13 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => e
 setInterval(() => { void finishExpiredAttempts(); }, 5000).unref();
 async function startServer() {
   if (process.env.ADMIN_EMAIL && process.env.ADMIN_PASSWORD) {
-    const passwordHash = await bcrypt.hash(process.env.ADMIN_PASSWORD, 12);
-    await prisma.admin.upsert({ where: { email: process.env.ADMIN_EMAIL.toLowerCase() }, update: { passwordHash }, create: { email: process.env.ADMIN_EMAIL.toLowerCase(), passwordHash } });
+    try {
+      const passwordHash = await bcrypt.hash(process.env.ADMIN_PASSWORD, 12);
+      await prisma.admin.upsert({ where: { email: process.env.ADMIN_EMAIL.toLowerCase() }, update: { passwordHash }, create: { email: process.env.ADMIN_EMAIL.toLowerCase(), passwordHash } });
+      console.log('✅ Default admin account ready.');
+    } catch (err) {
+      console.error('⚠️ Admin seeding skipped (DB connection pending):', err);
+    }
   }
   httpServer.listen(port, '0.0.0.0', () => console.log(`LiveQuiz server listening on port ${port}`));
 }
