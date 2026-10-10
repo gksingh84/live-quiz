@@ -1246,7 +1246,7 @@ app.use((req, res, next) => {
 });
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => errorResponse(res, error));
 
-setInterval(() => { void finishExpiredAttempts(); }, 5000).unref();
+setInterval(() => { void finishExpiredAttempts().catch(() => {}); }, 5000).unref();
 async function startServer() {
   if (process.env.ADMIN_EMAIL && process.env.ADMIN_PASSWORD) {
     try {
