@@ -994,14 +994,48 @@ app.get('/api/quizzes', adminOnly, async (_req, res) => {
 app.post('/api/quizzes', adminOnly, async (req, res) => {
   try {
     const data = parse(quizInput, req.body);
-    const quiz = await prisma.quiz.create({
-      data: {
-        title: data.title, mode: data.mode as QuizMode,
-        timeLimitSeconds: data.mode === 'LIVE' ? null : data.timeLimitSeconds,
-        showResults: data.showResults,
-        questions: { create: data.questions.map((question, position) => ({ prompt: question.prompt, marks: question.marks, imageUrl: question.imageUrl ?? null, type: question.type ?? 'MCQ', position, options: { create: question.options.map((option, optionPosition) => ({ ...option, position: optionPosition })) } })) },
+    const quiz = await prisma.$transaction(async (tx) => {
+      const createdQuiz = await tx.quiz.create({
+        data: {
+          title: data.title,
+          mode: data.mode as QuizMode,
+          timeLimitSeconds: data.mode === 'LIVE' ? null : data.timeLimitSeconds,
+          showResults: data.showResults,
+        },
+      });
+
+      if (data.questions.length > 0) {
+        const createdQuestions = await tx.question.createManyAndReturn({
+          data: data.questions.map((question, position) => ({
+            quizId: createdQuiz.id,
+            prompt: question.prompt,
+            marks: question.marks,
+            imageUrl: question.imageUrl ?? null,
+            type: question.type ?? 'MCQ',
+            position,
+          })),
+          select: { id: true, position: true },
+        });
+
+        const allOptions = createdQuestions.flatMap((createdQ) => {
+          const originalQ = data.questions[createdQ.position];
+          return (originalQ?.options ?? []).map((option, optionPosition) => ({
+            questionId: createdQ.id,
+            position: optionPosition,
+            text: option.text,
+            isCorrect: option.isCorrect,
+          }));
+        });
+
+        if (allOptions.length > 0) {
+          await tx.option.createMany({
+            data: allOptions,
+          });
+        }
       }
-    });
+
+      return createdQuiz;
+    }, { timeout: 60000, maxWait: 20000 });
     res.status(201).json({ quiz });
   } catch (error) { errorResponse(res, error); }
 });
@@ -1028,15 +1062,55 @@ app.put('/api/quizzes/:id', adminOnly, async (req, res) => {
           await tx.attempt.deleteMany({ where: { quizId: id } });
         }
       }
+
+      // Delete existing questions (and cascaded options)
       await tx.question.deleteMany({ where: { quizId: id } });
+
+      // Update quiz metadata without heavy nested writes
       await tx.quiz.update({
-        where: { id }, data: {
-          title: data.title, mode: data.mode as QuizMode, timeLimitSeconds: data.mode === 'LIVE' ? null : data.timeLimitSeconds,
-          showResults: data.showResults, currentQuestionIndex: 0, currentAnswerRevealed: false,
-          questions: { create: data.questions.map((question, position) => ({ prompt: question.prompt, marks: question.marks, imageUrl: question.imageUrl ?? null, type: question.type ?? 'MCQ', position, options: { create: question.options.map((option, optionPosition) => ({ ...option, position: optionPosition })) } })) },
-        }
+        where: { id },
+        data: {
+          title: data.title,
+          mode: data.mode as QuizMode,
+          timeLimitSeconds: data.mode === 'LIVE' ? null : data.timeLimitSeconds,
+          showResults: data.showResults,
+          currentQuestionIndex: 0,
+          currentAnswerRevealed: false,
+        },
       });
-    }, { timeout: 30000, maxWait: 10000 });
+
+      // Bulk insert questions in a single query
+      if (data.questions.length > 0) {
+        const createdQuestions = await tx.question.createManyAndReturn({
+          data: data.questions.map((question, position) => ({
+            quizId: id,
+            prompt: question.prompt,
+            marks: question.marks,
+            imageUrl: question.imageUrl ?? null,
+            type: question.type ?? 'MCQ',
+            position,
+          })),
+          select: { id: true, position: true },
+        });
+
+        // Bulk insert all options across questions in a single query
+        const allOptions = createdQuestions.flatMap((createdQ) => {
+          const originalQ = data.questions[createdQ.position];
+          return (originalQ?.options ?? []).map((option, optionPosition) => ({
+            questionId: createdQ.id,
+            position: optionPosition,
+            text: option.text,
+            isCorrect: option.isCorrect,
+          }));
+        });
+
+        if (allOptions.length > 0) {
+          await tx.option.createMany({
+            data: allOptions,
+          });
+        }
+      }
+    }, { timeout: 60000, maxWait: 20000 });
     res.json({ ok: true });
   } catch (error) { errorResponse(res, error); }
 });
