@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: livequiz
+    name: maths-mentor
     env: node
     plan: free
     buildCommand: npm install --include=dev && npm run build
