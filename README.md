@@ -1,6 +1,6 @@
-# LiveQuiz
+# Maths Mentor
 
-A classroom quiz MVP with teacher-led live rounds, timed self-paced quizzes, student passkeys, persisted results, and real-time classroom updates.
+An interactive math classroom quiz platform with teacher-led live rounds, timed self-paced quizzes, student passkeys, persisted results, and real-time classroom updates.
 
 ## Stack
 

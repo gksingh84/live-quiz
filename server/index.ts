@@ -1585,6 +1585,6 @@ async function startServer() {
       console.error('⚠️ Admin seeding skipped (DB connection pending):', err);
     }
   }
-  httpServer.listen(port, '0.0.0.0', () => console.log(`LiveQuiz server listening on port ${port}`));
+  httpServer.listen(port, '0.0.0.0', () => console.log(`Maths Mentor server listening on port ${port}`));
 }
 void startServer();

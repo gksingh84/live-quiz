@@ -142,7 +142,7 @@ function App() {
     setError('');
   }
 
-  if (loading) return <div className="loading-screen"><span className="brand-mark"><BookOpenCheck size={21} /></span><span>Getting your classroom ready</span></div>;
+  if (loading) return <div className="loading-screen"><span className="brand-mark"><img src="/logo.png" alt="Maths Mentor" className="brand-logo" /></span><span>Getting Maths Mentor ready</span></div>;
   if (!user) return <Login mode={authMode} onMode={setAuthMode} onSubmit={signIn} error={error} />;
   return user.role === 'admin'
     ? <TeacherApp user={user} onSignOut={signOut} notice={notice} setNotice={setNotice} />
@@ -162,22 +162,50 @@ function Login({ mode, onMode, onSubmit, error }: { mode: 'admin' | 'student'; o
   }
   return <main className="login-layout">
     <section className="login-side">
-      <div className="login-brand"><span className="brand-mark"><BookOpenCheck size={21} /></span><span>LiveQuiz</span></div>
-      <div className="login-copy"><div className="eyebrow"><span className="eyebrow-line" /> A better rhythm for learning</div><h1>Make every<br />answer <em>count.</em></h1><p>Thoughtful quizzes for lively classrooms and focused practice.</p><div className="login-note"><Sparkles size={17} /><span>One room. Everyone in.</span></div></div>
-      <div className="login-footer"><span>Built for curious minds</span><span>01 / 02</span></div>
+      <div className="login-brand"><span className="brand-mark"><img src="/logo.png" alt="Maths Mentor" className="brand-logo" /></span><span>Maths Mentor</span></div>
+      <div className="login-copy">
+        <div className="eyebrow"><span className="eyebrow-line" /> LEARN · PRACTISE · EXCEL</div>
+        <h1>Understand Maths.<br />Master Every <em>Concept.</em></h1>
+        <p className="login-subtext">Live classes, clear explanations, and guided practice to help you become a confident Maths learner.</p>
+        <div className="login-pillars">
+          <div className="pillar-item">
+            <span className="pillar-icon"><CheckCircle2 size={16} /></span>
+            <div className="pillar-text">
+              <strong>Learn concepts clearly</strong>
+              <span>Understand the why behind every formula.</span>
+            </div>
+          </div>
+          <div className="pillar-item">
+            <span className="pillar-icon"><CheckCircle2 size={16} /></span>
+            <div className="pillar-text">
+              <strong>Practise with purpose</strong>
+              <span>Strengthen your skills with questions and worksheets.</span>
+            </div>
+          </div>
+          <div className="pillar-item">
+            <span className="pillar-icon"><CheckCircle2 size={16} /></span>
+            <div className="pillar-text">
+              <strong>Grow with every class</strong>
+              <span>Build confidence one concept at a time.</span>
+            </div>
+          </div>
+        </div>
+        <div className="login-note"><Sparkles size={17} /><span>Every student can learn Maths with the right guidance.</span></div>
+      </div>
+      <div className="login-footer"><span>Maths Mentor</span><span>Learn · Practise · Excel</span></div>
     </section>
     <section className="login-main">
       <div className="login-card">
-        <span className="overline">Welcome to class</span><h2>{mode === 'student' ? 'Ready when you are.' : 'Your classroom, in sync.'}</h2><p className="muted">{mode === 'student' ? 'Enter the passkey your teacher shared with you.' : 'Sign in to prepare a quiz or bring the class together.'}</p>
+        <span className="overline">Welcome to Maths Mentor</span><h2>{mode === 'student' ? 'Ready when you are.' : 'Your classroom, in sync.'}</h2><p className="muted">{mode === 'student' ? 'Enter the passkey your teacher shared with you.' : 'Sign in to prepare a quiz or bring the class together.'}</p>
         <div className="segmented login-switch"><button className={mode === 'student' ? 'selected' : ''} onClick={() => onMode('student')} type="button">Student</button><button className={mode === 'admin' ? 'selected' : ''} onClick={() => onMode('admin')} type="button">Teacher</button></div>
         <form onSubmit={submit} className="form-stack">
           {mode === 'student' ? <label className="field"><span>Your passkey</span><div className="input-with-icon"><KeyRound size={17} /><input autoFocus required value={passkey} onChange={(event) => setPasskey(event.target.value.toUpperCase())} placeholder="Enter your 6-character passkey" autoCapitalize="characters" autoComplete="one-time-code" maxLength={12} /></div></label> : <><label className="field"><span>Email address</span><input autoFocus required type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="teacher@school.com" autoComplete="username" /></label><label className="field"><span>Password</span><input required type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Enter your password" autoComplete="current-password" /></label></>}
           {error && <div className="inline-error" role="alert">{error}</div>}
           <button className="button button-primary button-wide" type="submit" disabled={busy}>{busy ? 'Joining...' : mode === 'student' ? <>Join classroom <ArrowRight size={17} /></> : <>Sign in <ArrowRight size={17} /></>}</button>
         </form>
-        <div className="secure-note"><ShieldCheck size={15} /><span>{mode === 'student' ? 'Your answers stay private to you and your teacher.' : 'Protected teacher access'}</span></div>
+        {mode === 'admin' && <div className="secure-note"><ShieldCheck size={15} /><span>Protected teacher access</span></div>}
       </div>
-      <div className="login-bottom">Live lessons <span /> Self-paced practice <span /> Clear results</div>
+      <div className="login-bottom">Learn concepts clearly <span /> Practise with purpose <span /> Grow with every class</div>
     </section>
   </main>;
 }
@@ -246,7 +274,7 @@ function TeacherApp({ user, onSignOut, notice, setNotice }: { user: User; onSign
 
   return <div className="app-shell">
     <aside className="sidebar">
-      <div className="sidebar-brand"><span className="brand-mark"><BookOpenCheck size={19} /></span><span>LiveQuiz</span><span className="brand-dot" /></div>
+      <div className="sidebar-brand"><span className="brand-mark"><img src="/logo.png" alt="Maths Mentor" className="brand-logo" /></span><span>Maths Mentor</span><span className="brand-dot" /></div>
       <div className="sidebar-label">TEACHER SPACE</div>
       <nav className="side-nav" aria-label="Teacher navigation">
         <NavItem active={tab === 'overview'} icon={<BarChart3 size={17} />} label="Overview" onClick={() => setTab('overview')} />
@@ -1575,7 +1603,7 @@ function StudentApp({ user, onSignOut, notice, setNotice }: { user: User; onSign
       ? activeQuiz.totalMarks
       : activeQuiz.questions.reduce((sum, q) => sum + (q.marks ?? 1), 0);
 
-    return <main className="student-shell"><header className="student-topbar"><div className="student-brand"><span className="brand-mark"><BookOpenCheck size={18} /></span><span>LiveQuiz</span></div><div className="student-top-right"><span className="student-name"><span className="avatar avatar-small">{user.name?.slice(0, 1).toUpperCase()}</span>{user.name}</span><button className="button button-secondary" style={{ fontSize: '13px', padding: '5px 12px', minHeight: '34px', gap: '6px' }} onClick={() => { setActiveQuiz(null); sessionStorage.removeItem('activeQuizId'); void loadQuizzes(); }}><ArrowLeft size={14} /> Back to Classroom</button></div></header>
+    return <main className="student-shell"><header className="student-topbar"><div className="student-brand"><span className="brand-mark"><img src="/logo.png" alt="Maths Mentor" className="brand-logo" /></span><span>Maths Mentor</span></div><div className="student-top-right"><span className="student-name"><span className="avatar avatar-small">{user.name?.slice(0, 1).toUpperCase()}</span>{user.name}</span><button className="button button-secondary" style={{ fontSize: '13px', padding: '5px 12px', minHeight: '34px', gap: '6px' }} onClick={() => { setActiveQuiz(null); sessionStorage.removeItem('activeQuizId'); void loadQuizzes(); }}><ArrowLeft size={14} /> Back to Classroom</button></div></header>
       <div className="student-quiz-wrap">{isFinished ? (
         <div className="student-review-shell">
           <div className="submitted-card review-header-card">
@@ -1705,8 +1733,8 @@ function StudentApp({ user, onSignOut, notice, setNotice }: { user: User; onSign
     <div className="app-shell">
       <aside className="sidebar">
         <div className="sidebar-brand">
-          <span className="brand-mark"><BookOpenCheck size={19} /></span>
-          <span>LiveQuiz</span>
+          <span className="brand-mark"><img src="/logo.png" alt="Maths Mentor" className="brand-logo" /></span>
+          <span>Maths Mentor</span>
           <span className="brand-dot" />
         </div>
         <div className="sidebar-label">STUDENT DASHBOARD</div>
