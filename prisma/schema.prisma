@@ -149,3 +149,38 @@ enum SubmissionStatus {
   SUBMITTED
   GRADED
 }
+
+model StudyMaterial {
+  id          String         @id @default(cuid())
+  title       String
+  description String?
+  content     String?
+  grade       String
+  subject     String         @default("Mathematics")
+  mediaType   StudyMediaType @default(ARTICLE)
+  fileUrl     String?
+  fileName    String?
+  fileSize    Int?
+  videoUrl    String?
+  coverImage  String?
+  readTime    String?
+  authorName  String         @default("Maths Mentor")
+  status      MaterialStatus @default(PUBLISHED)
+  views       Int            @default(0)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+}
+
+enum StudyMediaType {
+  ARTICLE
+  PDF
+  VIDEO
+  PRESENTATION
+  IMAGE
+}
+
+enum MaterialStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}

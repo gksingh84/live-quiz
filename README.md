@@ -42,13 +42,18 @@ Use a Node.js 20+ host and a PostgreSQL database. Set `DATABASE_URL`, `SESSION_S
 
 The included Docker Compose file is intended for local development, not as a public production database configuration. Use a managed PostgreSQL service or a private, access-controlled PostgreSQL deployment for Internet hosting.
 
-## MVP behavior
+## Version 2: Complete Education Portal & Study Materials (Grades 4–10)
 
-- Live quiz: teacher starts, reveals the correct answer, advances, and ends the round. The active prompt synchronizes over Socket.IO; answer counts, per-option distribution, and named responses update for the teacher. Students only receive quiz state and their own saved answer.
-- Timed quiz: the teacher opens/closes it. The server sets each attempt deadline when the student joins, persists each answer change, grades on submit, and automatically submits expired attempts.
-- Results: teacher dashboard shows student answers, scores, distributions, and CSV export. Students can revisit completed attempts and see the score when the teacher enabled result visibility.
-- One attempt per student per quiz is enforced by a database unique constraint. Refreshing restores an in-progress attempt and its deadline.
+Version 2 transforms Maths Mentor into an open, full-fledged educational portal for school students and teachers:
 
-## Next production steps
-
-Before using this with a real class, set a strong session secret and admin password, use HTTPS, protect database backups, and test the deployment with a separate teacher and student browser session. For larger deployments, add email/passkey delivery workflows and operational monitoring.
+- **Public Educational Hub (No login required)**: Anyone with the link can explore study materials, chapter summaries, formulas, presentations, and video lectures.
+- **Curriculum Scope**: Focused on **Grade 4 to Grade 10** (CBSE & ICSE), architected for smooth future expansion to Grades 11 and 12.
+- **Dedicated Grade Hubs**: Specialized hubs for Grade 4 through Grade 10 highlighting core syllabus topics and filtered resources.
+- **Rich Media Formats**:
+  - 📖 **Articles & Revision Notes**: Typography-focused reading layouts with formulas, proofs, and solved examples.
+  - 📄 **PDFs & Cheat-Sheets**: Formula sheets and printable revision guides.
+  - 🎥 **Video Lessons**: Embedded lectures with summaries.
+  - 📊 **Presentations**: Slide decks breaking down concepts step-by-step.
+  - 🖼️ **Infographics**: Visual diagrams and mind-maps.
+- **Teacher Study Material Manager**: Teachers can publish, edit, attach files, embed videos, and organize materials by Grade and Subject.
+- **Integrated Classroom Portals**: Modal login for Student Passkey and Teacher Admin credentials allows seamless access to live quizzes, timed assessments, and workbook submissions without leaving the portal.

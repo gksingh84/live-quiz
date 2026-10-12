@@ -8,6 +8,7 @@ import jwt, { type JwtPayload } from 'jsonwebtoken';
 import { createServer } from 'node:http';
 import { createHmac, randomBytes } from 'node:crypto';
 import { resolve } from 'node:path';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { Prisma, PrismaClient, type QuizMode } from '@prisma/client';
 import { Server } from 'socket.io';
 import { z } from 'zod';
@@ -27,10 +28,18 @@ const secret = rawSecret && rawSecret.length >= 32
 app.set('trust proxy', 1);
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
+  referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
   contentSecurityPolicy: {
     directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", 'https://cdnjs.cloudflare.com'],
+      workerSrc: ["'self'", 'blob:', 'https://cdnjs.cloudflare.com'],
       styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
       fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
+      imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
+      mediaSrc: ["'self'", 'data:', 'blob:', 'https:'],
+      frameSrc: ["'self'", 'https://www.youtube.com', 'https://youtube.com'],
+      connectSrc: ["'self'", 'https:', 'wss:', 'ws:'],
     }
   },
 }));
@@ -158,11 +167,12 @@ async function publishQuizState(quizId: string) {
   const totalMarks = quiz.questions.reduce((sum, q) => sum + q.marks, 0);
   let stats = { answered: 0, participants: 0, distribution: [] as { optionId: string; count: number }[], responses: [] as { name: string; optionId: string; text: string }[] };
   if (question) {
+    const attemptFilter = quiz.status === 'ACTIVE' ? { quizId, status: 'IN_PROGRESS' as const } : { quizId };
     const [answers, participants, responses] = await Promise.all([
-      prisma.answer.groupBy({ by: ['optionId'], where: { questionId: question.id, attempt: { quizId } }, _count: { _all: true } }),
-      prisma.attempt.count({ where: { quizId } }),
+      prisma.answer.groupBy({ by: ['optionId'], where: { questionId: question.id, attempt: attemptFilter }, _count: { _all: true } }),
+      prisma.attempt.count({ where: attemptFilter }),
       prisma.answer.findMany({
-        where: { questionId: question.id, attempt: { quizId } },
+        where: { questionId: question.id, attempt: attemptFilter },
         select: { optionId: true, option: { select: { id: true, text: true } }, attempt: { select: { student: { select: { name: true } } } } },
         orderBy: { updatedAt: 'asc' }
       }),
@@ -219,19 +229,33 @@ app.post('/api/auth/student', async (req, res) => {
     }
 
     sendSession(res, { id: student.id, role: 'student' });
-    res.json({ user: { role: 'student', name: student.name } });
+    res.json({ user: { id: student.id, role: 'student', name: student.name } });
   } catch (error) { errorResponse(res, error); }
 });
 
 app.get('/api/auth/me', authenticate(), async (req: AuthRequest, res) => {
   if (req.session?.role === 'admin') {
-    const admin = await prisma.admin.findUnique({ where: { id: req.session.id }, select: { email: true } });
-    return res.json({ user: admin ? { role: 'admin', email: admin.email } : null });
+    const admin = await prisma.admin.findUnique({ where: { id: req.session.id }, select: { id: true, email: true } });
+    return res.json({ user: admin ? { id: admin.id, role: 'admin', email: admin.email } : null });
   }
-  const student = await prisma.student.findUnique({ where: { id: req.session!.id }, select: { name: true, active: true } });
+  const student = await prisma.student.findUnique({ where: { id: req.session!.id }, select: { id: true, name: true, active: true } });
   if (!student?.active) return res.status(401).json({ error: 'This student passkey has been disabled.' });
-  return res.json({ user: { role: 'student', name: student.name } });
+  return res.json({ user: { id: student.id, role: 'student', name: student.name } });
 });
+
+app.all('/api/auth/logout', (_req, res) => {
+  res.clearCookie(sessionCookie, { ...cookieOptions, maxAge: 0 });
+  res.clearCookie(sessionCookie, { path: '/' });
+  res.clearCookie(sessionCookie);
+  return res.json({ ok: true });
+});
+const uploadedFileSchema = z.object({
+  name: z.string().max(255),
+  type: z.string().max(100),
+  data: z.string(),
+  size: z.number().optional(),
+});
+
 const aiQuizInput = z.object({
   subject: z.string().trim().min(1).max(200),
   grade: z.string().trim().min(1).max(100),
@@ -244,6 +268,8 @@ const aiQuizInput = z.object({
   details: z.string().trim().max(2000).optional(),
   provider: z.enum(['auto', 'gemini', 'openai']).optional(),
   apiKey: z.string().trim().optional(),
+  strictSourceContent: z.boolean().optional(),
+  uploadedFiles: z.array(uploadedFileSchema).max(15).optional(),
 });
 
 function generateTopicQuestions(subject: string, topic: string, subtopics: string | undefined, grade: string, difficulty: string, count: number) {
@@ -531,7 +557,160 @@ function parseAIResponseJSON(rawText: string, data: z.infer<typeof aiQuizInput>)
   }
 }
 
+function buildUploadedContentPrompt(data: z.infer<typeof aiQuizInput>) {
+  const isStrict = Boolean(data.strictSourceContent);
+  const fileCount = data.uploadedFiles?.length || 0;
+
+  let textDocs = '';
+  if (data.uploadedFiles) {
+    for (const file of data.uploadedFiles) {
+      if (file.type.startsWith('text/') || file.name.endsWith('.txt') || file.name.endsWith('.md')) {
+        try {
+          let text = file.data;
+          if (text.includes(';base64,')) {
+            text = Buffer.from(text.split(';base64,')[1], 'base64').toString('utf-8');
+          } else if (!text.startsWith('data:')) {
+            const dec = Buffer.from(text, 'base64').toString('utf-8');
+            if (/[\x20-\x7E\r\n\t]{10,}/.test(dec)) text = dec;
+          }
+          textDocs += `\n\n--- [ATTACHED TEXT DOCUMENT: "${file.name}"] ---\n${text.slice(0, 25000)}\n--- [END OF "${file.name}"] ---\n`;
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+
+  return `# CRITICAL ASSESSMENT MISSION: CHAPTER-BASED QUIZ & QUESTION PAPER GENERATION
+
+You are an expert curriculum designer, CBSE master teacher, and senior question paper author.
+You have been provided with ${fileCount} attached file(s) (scanned textbook pages, chapter photographs, sample papers, or lesson notes).
+
+---
+
+## 1. SOURCE MATERIAL INVENTORY & COMPREHENSIVE TOPIC COVERAGE (MANDATORY)
+The attached files are your PRIMARY SOURCE OF KNOWLEDGE. You must:
+1. **Examine every attached image, scan, and page systematically**:
+   - Carefully read all headings, sub-headings, section texts, definitions, diagrams, charts, worked examples, and footnotes visible across ALL attached files.
+2. **Comprehensive Topic Coverage (NO TOPIC OMITTED)**:
+   - Identify every distinct concept, topic, and sub-topic covered across the uploaded material.
+   - Distribute the ${data.questionCount} questions proportionally across ALL the topics present in the uploaded pages.
+   - Do NOT concentrate all questions on just one page or the opening paragraph. Every section/topic from the uploaded material must be assessed.
+3. **Strict Content Boundary**:
+   ${isStrict
+     ? '• STRICT MODE IS ACTIVE: All questions, correct answers, and options MUST be grounded exclusively in the concepts, laws, terms, and phenomena present in the uploaded material. DO NOT introduce topics from unattached chapters or external unmentioned syllabi.'
+     : '• REFERENCE MODE: Use the uploaded pages as the central anchor of truth, while leveraging curriculum context to create polished, age-appropriate questions for Grade ' + data.grade + '.'
+   }
+
+---
+
+## 2. TRANSFORM HOW QUESTIONS ARE ASKED (DO NOT MERELY COPY THE FORMAT)
+CRITICAL INSTRUCTION: Do NOT simply duplicate, rephrase, or mimic the back-of-the-chapter exercise questions, end-of-textbook quizzes, or rote definition prompts!
+Instead, transform every topic from the uploaded pages into FRESH, NOVEL, AND COMPETENCY-BASED questions by fundamentally changing the way questions are formulated:
+
+1. **Situational & Everyday Application Scenarios**:
+   - Reframe abstract concepts into real-world scenarios, everyday situations, or classroom experiments described in the text.
+   - Example style: Instead of asking "What is transpiration?", present: "A student wraps a transparent plastic bag around a leafy branch of a potted plant in direct sunlight. After 3 hours, water droplets form inside the bag. Which concept from the chapter explains this observation?"
+
+2. **Cause-and-Effect & Mechanism Questions**:
+   - Ask what happens when a specific condition changes: "If variable X increases while Y is kept constant, what effect is observed on Z according to the chapter?"
+   - Test the 'Why' and 'How' behind processes, rather than just naming terms.
+
+3. **Comparative & Analytical Thinking**:
+   - Create questions that require comparing two concepts, classifications, or reactions discussed on the pages (e.g. similarities, distinguishing characteristics, boundary conditions).
+
+4. **Hypothetical & Predictive "What If" Questions**:
+   - "What would happen if step 2 in this process was omitted?" or "If an organism lacked this specific structure mentioned in the text, which function would be compromised?"
+
+5. **Diagnostic Distractors (Misconception-Busting Options)**:
+   - For Multiple Choice Questions, provide 4 plausible, well-thought-out options (A, B, C, D).
+   - The 3 incorrect options must reflect authentic student misconceptions or common conceptual pitfalls related to the chapter, not obvious absurdities.
+
+6. **Rich Pedagogical Explanations**:
+   - For every question, write a comprehensive teacher explanation that directly references the concept from the uploaded pages and explains why the correct option is right and why other options are incorrect.
+
+---
+
+## 3. ASSESSMENT SPECIFICATIONS
+- Subject: ${data.subject}
+- Target Grade: ${data.grade}
+- Topic: ${data.topic}${data.subtopics ? ` (Subtopics: ${data.subtopics})` : ''}
+- Total Questions: ${data.questionCount}
+- Difficulty Level: ${data.difficulty}
+- Target Question Type: ${data.questionType || 'ALL'}
+- Teacher Instructions: ${data.details || 'None specified'}
+${textDocs}
+
+---
+
+## 4. OUTPUT FORMAT (STRICT RAW JSON ONLY)
+Respond ONLY with a valid raw JSON object matching the exact schema below. Do not wrap in markdown code blocks or add introductory/concluding text:
+{
+  "title": "${data.subject}: ${data.topic} (${data.grade} - Chapter Assessment)",
+  "questions": [
+    {
+      "question": "The transformed, context-rich question text testing a specific concept from the uploaded pages...",
+      "options": [
+        "First option",
+        "Second option",
+        "Third option",
+        "Fourth option"
+      ],
+      "answer": "A",
+      "explanation": "Detailed explanation citing the concept from the uploaded pages, clarifying the mechanism and addressing misconceptions.",
+      "hint": "Clue to prompt student critical thinking."
+    }
+  ]
+}
+
+Ensure the questions array contains EXACTLY ${data.questionCount} questions covering all sections of the uploaded pages.`;
+}
+
 function buildMasterCBSEPrompt(data: z.infer<typeof aiQuizInput>) {
+  let uploadedContext = '';
+  if (data.uploadedFiles && data.uploadedFiles.length > 0) {
+    const fileSummary = data.uploadedFiles.map((f, i) => `  ${i + 1}. "${f.name}" (${f.type})`).join('\n');
+    if (data.strictSourceContent) {
+      uploadedContext = `\n\n======================================================================
+# MANDATORY STRICT UPLOADED SOURCE CONTENT REQUIREMENT (STRICT MODE IS ACTIVE)
+The teacher has attached ${data.uploadedFiles.length} file(s) (sample question papers, textbook chapter scans, or exercise notes):
+${fileSummary}
+
+CRITICAL STRICT RULES (MANDATORY):
+1. You MUST generate ALL questions, options, and explanations STRICTLY AND EXCLUSIVELY based on the facts, concepts, problems, and questions found in the uploaded content provided (chapter scans, sample papers, images, or documents).
+2. DO NOT introduce external topics, unmentioned formulas, or concepts from other chapters that do not appear in the uploaded source content.
+3. If the uploaded material contains specific sample questions or textbook exercises, adapt, paraphrase, or faithfully format them into the requested question structure.
+4. If a fact or question is not supported by the uploaded files, DO NOT invent or extrapolate it.
+======================================================================\n`;
+    } else {
+      uploadedContext = `\n\n----------------------------------------------------------------------
+# REFERENCE MATERIAL ATTACHED (STANDARD LLM KNOWLEDGE MODE)
+The teacher has attached ${data.uploadedFiles.length} file(s) for reference and guidance:
+${fileSummary}
+
+INSTRUCTIONS:
+You may generate questions using your broader AI pedagogical knowledge and curriculum understanding for ${data.grade} ${data.subject}, while using the uploaded documents and images as helpful reference, context, and inspiration.
+----------------------------------------------------------------------\n`;
+    }
+
+    for (const file of data.uploadedFiles) {
+      if (file.type.startsWith('text/') || file.name.endsWith('.txt') || file.name.endsWith('.md')) {
+        try {
+          let text = file.data;
+          if (text.includes(';base64,')) {
+            text = Buffer.from(text.split(';base64,')[1], 'base64').toString('utf-8');
+          } else if (!text.startsWith('data:')) {
+            const dec = Buffer.from(text, 'base64').toString('utf-8');
+            if (/[\x20-\x7E\r\n\t]{10,}/.test(dec)) text = dec;
+          }
+          uploadedContext += `\n\n--- CONTENT OF UPLOADED DOCUMENT: ${file.name} ---\n${text.slice(0, 20000)}\n--- END OF ${file.name} ---\n`;
+        } catch {
+          // skip binary decode
+        }
+      }
+    }
+  }
+
   return `# ROLE
 
 You are an experienced CBSE school teacher, examination question-paper setter and competency-based assessment expert.
@@ -571,7 +750,9 @@ Language: ENGLISH
 Question Type: ${data.questionType || 'ALL'}
 Sub-Topics: ${data.subtopics || 'Core concepts'}
 Additional Details: ${data.details || 'None'}
-
+Strict Mode (Generate Strictly from Uploaded Content): ${data.strictSourceContent ? 'YES - STRICTLY FROM UPLOADED CONTENT ONLY' : 'NO - STANDARD LLM KNOWLEDGE'}
+Uploaded Files Count: ${data.uploadedFiles?.length || 0}
+${uploadedContext}
 If any of these inputs are not provided, use sensible defaults appropriate for the selected class and subject.
 
 ---
@@ -903,10 +1084,33 @@ async function generateAIQuiz(data: z.infer<typeof aiQuizInput>) {
     throw new Error('API Key is required for AI Quiz Generation. Please select Google Gemini or ChatGPT in the provider dropdown and paste your API key in the field below.');
   }
 
-  const systemRole = `You are an experienced CBSE school teacher, examination question-paper setter and competency-based assessment expert. Generate high-quality quiz questions aligned with NEP 2020/2026 principles.`;
-  const prompt = buildMasterCBSEPrompt(data);
+  const hasUploadedFiles = Boolean(data.uploadedFiles && data.uploadedFiles.length > 0);
+  const systemRole = hasUploadedFiles
+    ? `You are an expert curriculum designer, CBSE question paper author and pedagogical assessment specialist. Thoroughly inspect all attached chapter pages and formulate fresh, transformed, competency-based questions covering all topics without copying textbook question formats.`
+    : `You are an experienced CBSE school teacher, examination question-paper setter and competency-based assessment expert. Generate high-quality quiz questions aligned with NEP 2020/2026 principles.`;
+  const prompt = hasUploadedFiles
+    ? buildUploadedContentPrompt(data)
+    : buildMasterCBSEPrompt(data);
 
   if (selectedProvider === 'openai' || (selectedProvider === 'auto' && openaiKey && !geminiKey)) {
+    let userContent: any = prompt;
+    if (data.uploadedFiles && data.uploadedFiles.length > 0) {
+      const imageFiles = data.uploadedFiles.filter(f => f.type.startsWith('image/'));
+      if (imageFiles.length > 0) {
+        userContent = [
+          ...imageFiles.map(f => {
+            const raw = f.data.trim();
+            const url = raw.startsWith('data:') ? raw : `data:${f.type || 'image/jpeg'};base64,${raw}`;
+            return {
+              type: 'image_url',
+              image_url: { url, detail: 'high' }
+            };
+          }),
+          { type: 'text', text: prompt }
+        ];
+      }
+    }
+
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -917,7 +1121,7 @@ async function generateAIQuiz(data: z.infer<typeof aiQuizInput>) {
         model: 'gpt-4o-mini',
         messages: [
           { role: 'system', content: systemRole },
-          { role: 'user', content: prompt }
+          { role: 'user', content: userContent }
         ],
         response_format: { type: 'json_object' }
       })
@@ -936,8 +1140,33 @@ async function generateAIQuiz(data: z.infer<typeof aiQuizInput>) {
   }
 
   if (selectedProvider === 'gemini' || (selectedProvider === 'auto' && geminiKey)) {
-    const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-pro', 'gemini-pro'];
+    const candidateModels = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-2.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-pro', 'gemini-pro'];
     let lastError = '';
+
+    const parts: Array<any> = [];
+
+    if (data.uploadedFiles && data.uploadedFiles.length > 0) {
+      for (const file of data.uploadedFiles) {
+        if (file.type.startsWith('image/') || file.type === 'application/pdf') {
+          let pureBase64 = file.data;
+          if (pureBase64.includes(';base64,')) {
+            pureBase64 = pureBase64.split(';base64,')[1];
+          }
+          pureBase64 = pureBase64.replace(/\s+/g, '');
+          const mimeType = file.type === 'application/pdf' ? 'application/pdf' : (file.type || 'image/jpeg');
+
+          // Standard Google Gemini REST API requires camelCase inlineData:
+          parts.push({
+            inlineData: {
+              mimeType,
+              data: pureBase64,
+            }
+          });
+        }
+      }
+    }
+
+    parts.push({ text: `${systemRole}\n\n${prompt}` });
 
     for (const modelName of candidateModels) {
       try {
@@ -945,7 +1174,7 @@ async function generateAIQuiz(data: z.infer<typeof aiQuizInput>) {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            contents: [{ parts: [{ text: `${systemRole}\n\n${prompt}` }] }],
+            contents: [{ parts }],
             generationConfig: { responseMimeType: 'application/json' },
           }),
         });
@@ -1203,11 +1432,19 @@ app.post('/api/quizzes/:id/restart', adminOnly, async (req, res) => {
     if (!quiz) return res.status(404).json({ error: 'Quiz not found.' });
 
     await prisma.$transaction(async (tx) => {
-      const attempts = await tx.attempt.findMany({ where: { quizId: id }, select: { id: true } });
-      const attemptIds = attempts.map((attempt) => attempt.id);
+      // Find ONLY unsubmitted attempts (IN_PROGRESS).
+      // Completed student submissions (status: 'SUBMITTED') must remain untouched and preserved!
+      const unsubmittedAttempts = await tx.attempt.findMany({
+        where: { quizId: id, status: 'IN_PROGRESS' },
+        select: { id: true, status: true },
+      });
+      const attemptIds = unsubmittedAttempts
+        .filter((attempt) => attempt.status === 'IN_PROGRESS')
+        .map((attempt) => attempt.id);
+
       if (attemptIds.length > 0) {
         await tx.answer.deleteMany({ where: { attemptId: { in: attemptIds } } });
-        await tx.attempt.deleteMany({ where: { quizId: id } });
+        await tx.attempt.deleteMany({ where: { id: { in: attemptIds } } });
       }
       await tx.quiz.update({
         where: { id },
@@ -1220,6 +1457,8 @@ app.post('/api/quizzes/:id/restart', adminOnly, async (req, res) => {
     }, { timeout: 30000, maxWait: 10000 });
 
     await publishQuizState(id);
+    io.to(`students:${id}`).emit('quiz:restarted', { quizId: id });
+    io.to('students:lobby').emit('quiz:lobby_updated');
     res.json({ ok: true });
   } catch (error) { errorResponse(res, error); }
 });
@@ -1274,9 +1513,46 @@ app.get('/api/quizzes/:id/results', adminOnly, async (req, res) => {
     const quiz = await prisma.quiz.findUnique({ where: { id: parse(objectId, req.params.id) }, include: { questions: { orderBy: { position: 'asc' }, include: { options: { orderBy: { position: 'asc' } } } }, attempts: { include: { student: { select: { name: true } }, answers: { include: { question: true, option: true } } }, orderBy: { startedAt: 'asc' } } } });
     if (!quiz) return res.status(404).json({ error: 'Quiz not found.' });
     const totalMarks = quiz.questions.reduce((sum, question) => sum + question.marks, 0);
-    const results = quiz.attempts.map((attempt) => ({ id: attempt.id, name: attempt.student.name, status: attempt.status, startedAt: attempt.startedAt, submittedAt: attempt.submittedAt, score: attempt.score, totalMarks, answers: attempt.answers.map((answer) => ({ questionId: answer.questionId, question: answer.question.prompt, response: answer.option.text, correct: answer.option.isCorrect, marks: answer.question.marks })) }));
+    const results = quiz.attempts.map((attempt) => ({ id: attempt.id, studentId: attempt.studentId, name: attempt.student.name, status: attempt.status, startedAt: attempt.startedAt, submittedAt: attempt.submittedAt, score: attempt.score, totalMarks, answers: attempt.answers.map((answer) => ({ questionId: answer.questionId, question: answer.question.prompt, response: answer.option.text, correct: answer.option.isCorrect, marks: answer.question.marks })) }));
     const distribution = quiz.questions.map((question) => ({ question: question.prompt, options: question.options.map((option) => ({ text: option.text, correct: option.isCorrect, count: quiz.attempts.reduce((count, attempt) => count + attempt.answers.filter((answer) => answer.optionId === option.id).length, 0) })) }));
     res.json({ quiz: { id: quiz.id, title: quiz.title, mode: quiz.mode, status: quiz.status }, results, distribution });
+  } catch (error) { errorResponse(res, error); }
+});
+
+app.post('/api/quizzes/:quizId/attempts/:attemptId/reset', adminOnly, async (req, res) => {
+  try {
+    const quizId = parse(objectId, req.params.quizId);
+    const attemptId = parse(objectId, req.params.attemptId);
+
+    const attempt = await prisma.attempt.findUnique({
+      where: { id: attemptId },
+      include: {
+        student: { select: { id: true, name: true } },
+        quiz: { select: { id: true, title: true } },
+      },
+    });
+
+    if (!attempt || attempt.quizId !== quizId) {
+      return res.status(404).json({ error: 'Quiz attempt not found.' });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.answer.deleteMany({ where: { attemptId } });
+      await tx.attempt.delete({ where: { id: attemptId } });
+    });
+
+    void publishQuizState(quizId);
+    io.to('students:lobby').emit('quiz:lobby_updated');
+    io.to('students:lobby').to(`students:${quizId}`).emit('quiz:attempt_reset', {
+      quizId,
+      studentId: attempt.student.id,
+      studentName: attempt.student.name,
+    });
+
+    res.json({
+      ok: true,
+      message: `Quiz attempt for ${attempt.student.name} has been reset. They can now retry the quiz.`
+    });
   } catch (error) { errorResponse(res, error); }
 });
 
@@ -1369,7 +1645,7 @@ io.on('connection', (socket) => {
     const quiz = await prisma.quiz.findUnique({ where: { id: quizId }, select: { id: true, status: true } });
     if (!quiz) return;
     if (session.role === 'admin') socket.join(`teachers:${quizId}`);
-    else if (quiz.status === 'ACTIVE' && await prisma.attempt.findUnique({ where: { quizId_studentId: { quizId, studentId: session.id } }, select: { id: true } })) socket.join(`students:${quizId}`);
+    else if (session.role === 'student') socket.join(`students:${quizId}`);
     await publishQuizState(quizId);
   });
 });
@@ -1466,6 +1742,8 @@ app.post('/api/worksheets/ai-generate', adminOnly, async (req, res) => {
       details: z.string().trim().max(500).optional(),
       apiKey: z.string().trim().optional(),
       provider: z.enum(['auto', 'gemini', 'openai']).optional(),
+      strictSourceContent: z.boolean().optional(),
+      uploadedFiles: z.array(uploadedFileSchema).max(15).optional(),
     });
     const data = parse(schema, req.body);
 
@@ -1482,6 +1760,8 @@ app.post('/api/worksheets/ai-generate', adminOnly, async (req, res) => {
       details: `Create a formal printable Word-document style Question Paper for ${data.subject} (${data.grade}) on "${data.topic}". Total Marks: ${data.totalMarks}. ${data.details ?? ''}`,
       apiKey: data.apiKey,
       provider: data.provider,
+      strictSourceContent: data.strictSourceContent,
+      uploadedFiles: data.uploadedFiles,
     });
 
     if (generated && generated.questions?.length > 0) {
@@ -1641,6 +1921,207 @@ app.delete('/api/worksheets/submissions/:submissionId/images', adminOnly, async 
   } catch (error) { errorResponse(res, error); }
 });
 
+// --- STUDY MATERIAL MODULE (VERSION 2) ---
+
+// Public Study Materials List
+app.get('/api/public/study-materials', async (req, res) => {
+  try {
+    const grade = typeof req.query.grade === 'string' && req.query.grade ? req.query.grade : undefined;
+    const subject = typeof req.query.subject === 'string' && req.query.subject ? req.query.subject : undefined;
+    const mediaType = typeof req.query.mediaType === 'string' && req.query.mediaType ? req.query.mediaType : undefined;
+    const search = typeof req.query.search === 'string' && req.query.search.trim() ? req.query.search.trim() : undefined;
+
+    const where: any = { status: 'PUBLISHED' };
+    if (grade && grade !== 'All Grades' && grade !== 'ALL') {
+      where.grade = grade;
+    }
+    if (subject && subject !== 'All Subjects' && subject !== 'ALL') {
+      where.subject = subject;
+    }
+    if (mediaType && mediaType !== 'ALL') {
+      where.mediaType = mediaType;
+    }
+    if (search) {
+      where.OR = [
+        { title: { contains: search, mode: 'insensitive' } },
+        { description: { contains: search, mode: 'insensitive' } },
+        { subject: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+
+    const materials = await db.studyMaterial.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        grade: true,
+        subject: true,
+        mediaType: true,
+        fileUrl: true,
+        fileName: true,
+        fileSize: true,
+        videoUrl: true,
+        coverImage: true,
+        readTime: true,
+        authorName: true,
+        status: true,
+        views: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    res.json({ materials, count: materials.length });
+  } catch (error) { errorResponse(res, error); }
+});
+
+// Public Single Study Material Details (with view count increment)
+app.get('/api/public/study-materials/:id', async (req, res) => {
+  try {
+    const id = req.params.id as string;
+    const material = await db.studyMaterial.update({
+      where: { id },
+      data: { views: { increment: 1 } },
+    });
+    if (!material) return res.status(404).json({ error: 'Study material not found.' });
+    res.json({ material });
+  } catch (error) { errorResponse(res, error); }
+});
+
+// Public Summary of Grades & Material Counts
+app.get('/api/public/grades-summary', async (_req, res) => {
+  try {
+    const all = await db.studyMaterial.findMany({
+      where: { status: 'PUBLISHED' },
+      select: { grade: true, subject: true, mediaType: true },
+    });
+
+    const standardGrades = ['Grade 4', 'Grade 5', 'Grade 6', 'Grade 7', 'Grade 8', 'Grade 9', 'Grade 10'];
+    const gradeCounts: Record<string, number> = {};
+    for (const g of standardGrades) gradeCounts[g] = 0;
+
+    const subjectsSet = new Set<string>();
+    for (const item of all) {
+      if (item.grade) {
+        gradeCounts[item.grade] = (gradeCounts[item.grade] ?? 0) + 1;
+      }
+      if (item.subject) subjectsSet.add(item.subject);
+    }
+
+    res.json({
+      grades: gradeCounts,
+      subjects: Array.from(subjectsSet),
+      totalMaterials: all.length,
+    });
+  } catch (error) { errorResponse(res, error); }
+});
+
+// Admin Study Material Management Endpoints
+app.get('/api/study-materials', adminOnly, async (_req, res) => {
+  try {
+    const materials = await db.studyMaterial.findMany({
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json({ materials });
+  } catch (error) { errorResponse(res, error); }
+});
+
+app.post('/api/study-materials', adminOnly, async (req, res) => {
+  try {
+    const schema = z.object({
+      title: z.string().trim().min(1).max(200),
+      description: z.string().trim().max(1000).optional().nullable(),
+      content: z.string().trim().optional().nullable(),
+      grade: z.string().trim().min(1).max(50),
+      subject: z.string().trim().min(1).max(50).default('Mathematics'),
+      mediaType: z.enum(['ARTICLE', 'PDF', 'VIDEO', 'PRESENTATION', 'IMAGE']).default('ARTICLE'),
+      fileUrl: z.string().trim().optional().nullable(),
+      fileName: z.string().trim().optional().nullable(),
+      fileSize: z.number().int().optional().nullable(),
+      videoUrl: z.string().trim().optional().nullable(),
+      coverImage: z.string().trim().optional().nullable(),
+      readTime: z.string().trim().optional().nullable(),
+      authorName: z.string().trim().optional().default('Maths Mentor'),
+      status: z.enum(['DRAFT', 'PUBLISHED', 'ARCHIVED']).default('PUBLISHED'),
+    });
+    const data = parse(schema, req.body);
+    const material = await db.studyMaterial.create({ data });
+    res.status(201).json({ material });
+  } catch (error) { errorResponse(res, error); }
+});
+
+app.put('/api/study-materials/:id', adminOnly, async (req, res) => {
+  try {
+    const id = req.params.id as string;
+    const schema = z.object({
+      title: z.string().trim().min(1).max(200).optional(),
+      description: z.string().trim().max(1000).optional().nullable(),
+      content: z.string().trim().optional().nullable(),
+      grade: z.string().trim().min(1).max(50).optional(),
+      subject: z.string().trim().min(1).max(50).optional(),
+      mediaType: z.enum(['ARTICLE', 'PDF', 'VIDEO', 'PRESENTATION', 'IMAGE']).optional(),
+      fileUrl: z.string().trim().optional().nullable(),
+      fileName: z.string().trim().optional().nullable(),
+      fileSize: z.number().int().optional().nullable(),
+      videoUrl: z.string().trim().optional().nullable(),
+      coverImage: z.string().trim().optional().nullable(),
+      readTime: z.string().trim().optional().nullable(),
+      authorName: z.string().trim().optional(),
+      status: z.enum(['DRAFT', 'PUBLISHED', 'ARCHIVED']).optional(),
+    });
+    const data = parse(schema, req.body);
+    const material = await db.studyMaterial.update({ where: { id }, data });
+    res.json({ material });
+  } catch (error) { errorResponse(res, error); }
+});
+
+app.delete('/api/study-materials/:id', adminOnly, async (req, res) => {
+  try {
+    const id = req.params.id as string;
+    await db.studyMaterial.delete({ where: { id } });
+    res.json({ ok: true });
+  } catch (error) { errorResponse(res, error); }
+});
+
+app.post('/api/study-materials/upload', adminOnly, async (req, res) => {
+  try {
+    const schema = z.object({
+      fileName: z.string().min(1),
+      fileData: z.string().min(1), // base64
+      mediaType: z.enum(['PDF', 'PRESENTATION', 'IMAGE', 'VIDEO']),
+    });
+    const data = parse(schema, req.body);
+    const uploadsDir = resolve('public/uploads/materials');
+    if (!existsSync(uploadsDir)) {
+      mkdirSync(uploadsDir, { recursive: true });
+    }
+    const ext = data.fileName.includes('.') ? data.fileName.substring(data.fileName.lastIndexOf('.')) : '.dat';
+    const safeBase = randomBytes(8).toString('hex');
+    const storedFileName = `${Date.now()}_${safeBase}${ext}`;
+    const filePath = resolve(uploadsDir, storedFileName);
+
+    let base64Pure = data.fileData;
+    if (base64Pure.includes(';base64,')) {
+      base64Pure = base64Pure.split(';base64,')[1];
+    }
+    const buffer = Buffer.from(base64Pure, 'base64');
+    writeFileSync(filePath, buffer);
+
+    const fileUrl = `/uploads/materials/${storedFileName}`;
+    res.json({ fileUrl, fileName: data.fileName, fileSize: buffer.length });
+  } catch (error) { errorResponse(res, error); }
+});
+
+// Ensure public/uploads exists and serve statically
+const uploadsDir = resolve('public/uploads');
+if (!existsSync(uploadsDir)) {
+  mkdirSync(uploadsDir, { recursive: true });
+}
+app.use('/uploads', express.static(uploadsDir));
+
+app.use(express.static(resolve('public')));
 app.use(express.static(resolve('dist')));
 app.use((req, res, next) => {
   if (req.path.startsWith('/api/')) return next();

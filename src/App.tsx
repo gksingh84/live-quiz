@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { io, type Socket } from 'socket.io-client';
-import { ArrowLeft, ArrowRight, BarChart3, BookOpenCheck, Calculator, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronUp, CircleHelp, Clock3, Copy, Download, Eye, FileText, KeyRound, ListChecks, Lock, LogOut, Paperclip, Pencil, PenTool, Plus, Printer, Radio, RefreshCw, RotateCcw, Save, Send, ShieldCheck, Sparkles, Trash2, UploadCloud, UserCheck, Users, UserX, X } from 'lucide-react';
+import { AppWindow, ArrowLeft, ArrowRight, BarChart3, BookOpen, BookOpenCheck, Calculator, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronUp, CircleHelp, Clock3, Copy, Download, ExternalLink, Eye, FileText, KeyRound, ListChecks, Lock, LogOut, Maximize2, Minimize2, Paperclip, Pencil, PenTool, Plus, Printer, Radio, RefreshCw, RotateCcw, Save, Send, ShieldCheck, Sparkles, Trash2, UploadCloud, UserCheck, Users, UserX, X } from 'lucide-react';
+import { PublicPortal } from './components/PublicPortal';
+import { AuthModal } from './components/AuthModal';
+import { TeacherStudyMaterials } from './components/TeacherStudyMaterials';
 
 type Mode = 'LIVE' | 'SELF_PACED';
 type QuestionType = 'MCQ' | 'FILL_BLANK' | 'TRUE_FALSE' | 'SOLVE';
@@ -10,12 +13,12 @@ type Option = { id?: string; text: string; isCorrect?: boolean; correct?: boolea
 type Question = { id?: string; prompt: string; marks: number; imageUrl?: string | null; type?: QuestionType; options: Option[] };
 type Quiz = { id: string; title: string; mode: Mode; status: Status; timeLimitSeconds: number | null; showResults: boolean; currentQuestionIndex: number; currentAnswerRevealed: boolean; questions?: Question[]; _count?: { questions: number; attempts: number } };
 type Student = { id: string; name: string; passkey?: string | null; active: boolean; _count: { attempts: number } };
-type User = { role: 'admin' | 'student'; name?: string; email?: string };
+type User = { id?: string; role: 'admin' | 'student'; name?: string; email?: string };
 type QuizDraft = { title: string; mode: Mode; hasTimer: boolean; minutes: number; showResults: boolean; questions: Question[] };
 const newDraft = (): QuizDraft => ({ title: '', mode: 'LIVE', hasTimer: false, minutes: 20, showResults: true, questions: [emptyQuestion()] });
 type StudentQuiz = { id: string; title: string; mode: Mode; status: Status; timeLimitSeconds: number | null; questionCount: number; totalMarks?: number; attempt: { status: string; deadlineAt: string | null; score: number | null; submittedAt?: string | null } | null };
 type ActiveQuiz = { id: string; title: string; mode: Mode; status: Status; timeLimitSeconds: number | null; showResults: boolean; currentQuestionIndex: number; currentAnswerRevealed: boolean; questionCount?: number; totalMarks?: number; questions: Question[]; attempt: { status: string; deadlineAt: string | null; score: number | null; answers: { questionId: string; optionId: string }[] } | null };
-type Result = { id: string; name: string; status: string; submittedAt: string | null; score: number | null; totalMarks: number; answers: { question: string; response: string; correct: boolean; marks: number }[] };
+type Result = { id: string; studentId?: string; name: string; status: string; submittedAt: string | null; score: number | null; totalMarks: number; answers: { question: string; response: string; correct: boolean; marks: number }[] };
 type LiveStats = { answered: number; participants: number; distribution: { optionId: string; count: number }[]; responses: { name: string; optionId: string; text: string }[] };
 
 type WorksheetSubmission = {
@@ -120,36 +123,92 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 function App() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
-  const [authMode, setAuthMode] = useState<'admin' | 'student'>('student');
-  const [error, setError] = useState('');
+  const [loginModal, setLoginModal] = useState<'admin' | 'student' | null>(null);
+  const [view, setView] = useState<'portal' | 'dashboard'>(() => {
+    const saved = localStorage.getItem('maths_mentor_view');
+    return saved === 'portal' ? 'portal' : 'dashboard';
+  });
   const [notice, setNotice] = useState('');
 
+  async function signOut() {
+    try {
+      await api('/api/auth/logout', { method: 'POST' });
+    } catch {
+      // Fallback in case POST failed
+      await fetch('/api/auth/logout').catch(() => undefined);
+    }
+    setUser(null);
+    setView('portal');
+    localStorage.removeItem('maths_mentor_view');
+    localStorage.removeItem('teacher_active_tab');
+    localStorage.removeItem('student_active_tab');
+  }
+
   useEffect(() => {
-    api<{ user: User }>('/api/auth/me').then((result) => setUser(result.user)).catch(() => setUser(null)).finally(() => setLoading(false));
+    if (window.location.search.includes('logout')) {
+      void signOut().finally(() => {
+        window.history.replaceState({}, '', window.location.pathname);
+        setLoading(false);
+      });
+      return;
+    }
+
+    api<{ user: User }>('/api/auth/me')
+      .then((result) => {
+        setUser(result.user);
+        if (result.user) {
+          setView('dashboard');
+          localStorage.setItem('maths_mentor_view', 'dashboard');
+        } else {
+          setView('portal');
+          localStorage.removeItem('maths_mentor_view');
+        }
+      })
+      .catch(() => {
+        setUser(null);
+        setView('portal');
+        localStorage.removeItem('maths_mentor_view');
+      })
+      .finally(() => setLoading(false));
   }, []);
 
-  async function signIn(values: { email?: string; password?: string; passkey?: string }) {
-    setError('');
-    try {
-      const result = await api<{ user: User }>(`/api/auth/${authMode}`, { method: 'POST', body: JSON.stringify(values) });
-      setUser(result.user);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to sign in.'); }
-  }
-
-  async function signOut() {
-    await api('/api/auth/logout', { method: 'POST' }).catch(() => undefined);
-    setUser(null);
-    setError('');
-  }
-
   if (loading) return <div className="loading-screen"><span className="brand-mark"><img src="/logo.png" alt="Maths Mentor" className="brand-logo" /></span><span>Getting Maths Mentor ready</span></div>;
-  if (!user) return <Login mode={authMode} onMode={setAuthMode} onSubmit={signIn} error={error} />;
+
+  if (!user || view === 'portal') {
+    return (
+      <>
+        <PublicPortal
+          user={user}
+          onOpenLogin={(mode) => setLoginModal(mode)}
+          onGoToDashboard={() => {
+            setView('dashboard');
+            localStorage.setItem('maths_mentor_view', 'dashboard');
+          }}
+          onSignOut={signOut}
+        />
+        {loginModal && (
+          <AuthModal
+            mode={loginModal}
+            initialMode={loginModal}
+            onClose={() => setLoginModal(null)}
+            onSuccess={(u) => {
+              setUser(u);
+              setLoginModal(null);
+              setView('dashboard');
+              localStorage.setItem('maths_mentor_view', 'dashboard');
+            }}
+          />
+        )}
+      </>
+    );
+  }
+
   return user.role === 'admin'
-    ? <TeacherApp user={user} onSignOut={signOut} notice={notice} setNotice={setNotice} />
-    : <StudentApp user={user} onSignOut={signOut} notice={notice} setNotice={setNotice} />;
+    ? <TeacherApp user={user} onSignOut={signOut} notice={notice} setNotice={setNotice} onViewPortal={() => setView('portal')} />
+    : <StudentApp user={user} onSignOut={signOut} notice={notice} setNotice={setNotice} onViewPortal={() => setView('portal')} />;
 }
 
-function Login({ mode, onMode, onSubmit, error }: { mode: 'admin' | 'student'; onMode: (mode: 'admin' | 'student') => void; onSubmit: (values: { email?: string; password?: string; passkey?: string }) => void; error: string }) {
+export function Login({ mode, onSubmit, error }: { mode: 'admin' | 'student'; onMode?: (mode: 'admin' | 'student') => void; onSubmit: (values: { email?: string; password?: string; passkey?: string }) => void; error: string }) {
   const [busy, setBusy] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -196,8 +255,7 @@ function Login({ mode, onMode, onSubmit, error }: { mode: 'admin' | 'student'; o
     </section>
     <section className="login-main">
       <div className="login-card">
-        <span className="overline">Welcome to Maths Mentor</span><h2>{mode === 'student' ? 'Ready when you are.' : 'Your classroom, in sync.'}</h2><p className="muted">{mode === 'student' ? 'Enter the passkey your teacher shared with you.' : 'Sign in to prepare a quiz or bring the class together.'}</p>
-        <div className="segmented login-switch"><button className={mode === 'student' ? 'selected' : ''} onClick={() => onMode('student')} type="button">Student</button><button className={mode === 'admin' ? 'selected' : ''} onClick={() => onMode('admin')} type="button">Teacher</button></div>
+        <span className="overline">Welcome to Maths Mentor</span><h2>{mode === 'student' ? 'Student Passkey Access' : 'Teacher Administration'}</h2><p className="muted">{mode === 'student' ? 'Enter the passkey your teacher shared with you.' : 'Sign in to prepare a quiz or bring the class together.'}</p>
         <form onSubmit={submit} className="form-stack">
           {mode === 'student' ? <label className="field"><span>Your passkey</span><div className="input-with-icon"><KeyRound size={17} /><input autoFocus required value={passkey} onChange={(event) => setPasskey(event.target.value.toUpperCase())} placeholder="Enter your 6-character passkey" autoCapitalize="characters" autoComplete="one-time-code" maxLength={12} /></div></label> : <><label className="field"><span>Email address</span><input autoFocus required type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="teacher@school.com" autoComplete="username" /></label><label className="field"><span>Password</span><input required type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Enter your password" autoComplete="current-password" /></label></>}
           {error && <div className="inline-error" role="alert">{error}</div>}
@@ -210,8 +268,17 @@ function Login({ mode, onMode, onSubmit, error }: { mode: 'admin' | 'student'; o
   </main>;
 }
 
-function TeacherApp({ user, onSignOut, notice, setNotice }: { user: User; onSignOut: () => void; notice: string; setNotice: (text: string) => void }) {
-  const [tab, setTab] = useState<'overview' | 'quizzes' | 'worksheets' | 'students' | 'results' | 'ai_settings'>('overview');
+function TeacherApp({ user, onSignOut, notice, setNotice, onViewPortal }: { user: User; onSignOut: () => void; notice: string; setNotice: (text: string) => void; onViewPortal?: () => void }) {
+  const [tab, setTabState] = useState<'overview' | 'quizzes' | 'worksheets' | 'whiteboard' | 'students' | 'results' | 'ai_settings' | 'study_materials'>(() => {
+    const saved = localStorage.getItem('teacher_active_tab') as any;
+    const validTabs = ['overview', 'quizzes', 'worksheets', 'whiteboard', 'students', 'results', 'ai_settings', 'study_materials'];
+    return validTabs.includes(saved) ? saved : 'overview';
+  });
+
+  const setTab = (newTab: 'overview' | 'quizzes' | 'worksheets' | 'whiteboard' | 'students' | 'results' | 'ai_settings' | 'study_materials') => {
+    setTabState(newTab);
+    localStorage.setItem('teacher_active_tab', newTab);
+  };
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
   const [students, setStudents] = useState<Student[]>([]);
   const [worksheets, setWorksheets] = useState<WorksheetPaper[]>([]);
@@ -272,12 +339,29 @@ function TeacherApp({ user, onSignOut, notice, setNotice }: { user: User; onSign
     URL.revokeObjectURL(link.href);
   }
 
+  async function handleResetAttempt(result: Result) {
+    if (!selectedQuiz) return;
+    const currentQ = quizzes.find((q) => q.id === selectedQuiz);
+    const quizTitle = currentQ?.title || 'this quiz';
+    if (!window.confirm(`Reset "${quizTitle}" for ${result.name}? This will clear their submitted answers and allow them to retry the quiz from Question 1.`)) return;
+    try {
+      await api(`/api/quizzes/${selectedQuiz}/attempts/${result.id}/reset`, { method: 'POST' });
+      setNotice(`✓ "${quizTitle}" reset for ${result.name}. They can now retake the quiz.`);
+      await loadResults(selectedQuiz);
+      await refresh();
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : 'Unable to reset quiz for this student.');
+    }
+  }
+
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="sidebar-brand"><span className="brand-mark"><img src="/logo.png" alt="Maths Mentor" className="brand-logo" /></span><span>Maths Mentor</span><span className="brand-dot" /></div>
       <div className="sidebar-label">TEACHER SPACE</div>
       <nav className="side-nav" aria-label="Teacher navigation">
         <NavItem active={tab === 'overview'} icon={<BarChart3 size={17} />} label="Overview" onClick={() => setTab('overview')} />
+        <NavItem active={tab === 'whiteboard'} icon={<PenTool size={17} />} label="Whiteboard" onClick={() => setTab('whiteboard')} />
+        <NavItem active={tab === 'study_materials'} icon={<BookOpen size={17} />} label="Study Materials" onClick={() => setTab('study_materials')} />
         <NavItem active={tab === 'quizzes'} icon={<BookOpenCheck size={17} />} label="Quizzes and Worksheets" count={quizzes.length} onClick={() => setTab('quizzes')} />
         <NavItem active={tab === 'worksheets'} icon={<FileText size={17} />} label="Question Papers" count={worksheets.length} onClick={() => setTab('worksheets')} />
         <NavItem active={tab === 'students'} icon={<Users size={17} />} label="Students" count={students.length} onClick={() => setTab('students')} />
@@ -290,6 +374,11 @@ function TeacherApp({ user, onSignOut, notice, setNotice }: { user: User; onSign
       <header className="topbar">
         <div className="breadcrumb">Your classroom <span>/</span> <strong>{tabLabel(tab)}</strong></div>
         <div className="topbar-actions">
+          {onViewPortal && (
+            <button className="button button-secondary" style={{ fontSize: '13px', padding: '5px 12px', minHeight: '36px', gap: '6px' }} onClick={onViewPortal} title="Preview public website as seen by students and parents">
+              <ExternalLink size={14} /> Public Portal
+            </button>
+          )}
           {tab === 'overview' ? (
             <button className="button button-secondary" style={{ fontSize: '13px', padding: '5px 12px', minHeight: '36px', gap: '6px' }} onClick={onSignOut}>
               <LogOut size={14} /> Logout
@@ -306,7 +395,7 @@ function TeacherApp({ user, onSignOut, notice, setNotice }: { user: User; onSign
           <div className="avatar avatar-small">{(user.email ?? 'T').slice(0, 1).toUpperCase()}</div>
         </div>
       </header>
-      <div className="content-area">
+      <div className={`content-area ${tab === 'whiteboard' ? 'content-area--whiteboard' : ''}`}>
         {tab === 'overview' && (() => {
           const openQuizzes = quizzes.filter((q) => q.status === 'ACTIVE');
           const openPapers = worksheets.filter((w) => w.status === 'PUBLISHED');
@@ -400,10 +489,12 @@ function TeacherApp({ user, onSignOut, notice, setNotice }: { user: User; onSign
             </section>
           );
         })()}
+        {tab === 'study_materials' && <TeacherStudyMaterials setNotice={setNotice} onViewPortal={onViewPortal} />}
         {tab === 'quizzes' && <QuizManager quizzes={quizzes} selectedQuiz={selectedQuiz} setSelectedQuiz={setSelectedQuiz} liveQuiz={liveQuiz} refresh={refresh} setNotice={setNotice} onNavigateToAISettings={() => setTab('ai_settings')} />}
         {tab === 'worksheets' && <WorksheetsPanel setNotice={setNotice} onNavigateToAISettings={() => setTab('ai_settings')} />}
+        {tab === 'whiteboard' && <TeacherWhiteboard setNotice={setNotice} />}
         {tab === 'students' && <StudentManager students={students} refresh={refresh} setNotice={setNotice} onBackToClassroom={() => setTab('overview')} />}
-        {tab === 'results' && <ResultsPanel quizzes={quizzes} selectedQuiz={selectedQuiz} setSelectedQuiz={setSelectedQuiz} results={results} distribution={distribution} onExport={exportCsv} />}
+        {tab === 'results' && <ResultsPanel quizzes={quizzes} selectedQuiz={selectedQuiz} setSelectedQuiz={setSelectedQuiz} results={results} distribution={distribution} onExport={exportCsv} onResetAttempt={handleResetAttempt} />}
         {tab === 'ai_settings' && <AISettingsPanel setNotice={setNotice} />}
       </div>
       {notice && <div className="toast" role="status"><CheckCircle2 size={17} />{notice}<button onClick={() => setNotice('')} aria-label="Dismiss"><X size={14} /></button></div>}
@@ -514,9 +605,410 @@ function AISettingsPanel({ setNotice }: { setNotice: (msg: string) => void }) {
   );
 }
 
-function tabLabel(tab: string) { return ({ overview: 'Overview', quizzes: 'Quizzes and Worksheets', worksheets: 'Question Papers', students: 'Students', results: 'Results', ai_settings: 'AI Settings' } as Record<string, string>)[tab] ?? tab; }
+function TeacherWhiteboard({ setNotice }: { setNotice: (msg: string) => void }) {
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [iframeKey, setIframeKey] = useState(0);
+
+  const openInNewWindow = () => {
+    const width = Math.min(1360, Math.floor(window.screen.availWidth * 0.75));
+    const height = Math.min(920, Math.floor(window.screen.availHeight * 0.9));
+    const left = Math.floor((window.screen.availWidth - width) / 2);
+    const top = Math.floor((window.screen.availHeight - height) / 2);
+
+    window.open(
+      '/whiteboard.html',
+      'MathsMentorWhiteboardWindow',
+      `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`
+    );
+    setNotice('Whiteboard opened in a separate window. You can snap it adjacent to another app.');
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isFullscreen) {
+        setIsFullscreen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+
+    // Notify iframe of fullscreen change so canvas immediately covers 100% of viewport width
+    const iframe = document.getElementById('teacher-whiteboard-iframe') as HTMLIFrameElement | null;
+    if (iframe?.contentWindow) {
+      iframe.contentWindow.postMessage({ type: 'FULLSCREEN_CHANGE', isFullscreen }, '*');
+    }
+
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isFullscreen]);
+
+  return (
+    <section className={`whiteboard-section ${isFullscreen ? 'whiteboard-fullscreen-active' : 'view-enter'}`}>
+      {!isFullscreen && (
+        <div className="page-heading whiteboard-page-heading">
+          <div className="whiteboard-title-group">
+            <h1 className="whiteboard-title">Online Whiteboard</h1>
+            <span className="whiteboard-badge">Interactive Canvas</span>
+          </div>
+          <div className="whiteboard-top-actions">
+            <button
+              type="button"
+              className="button button-secondary whiteboard-action-btn"
+              onClick={() => {
+                setIframeKey((k) => k + 1);
+                setNotice('Whiteboard canvas reloaded.');
+              }}
+              title="Reload the whiteboard canvas"
+            >
+              <RotateCcw size={14} /> Reload
+            </button>
+            <button
+              type="button"
+              className="button button-secondary whiteboard-action-btn"
+              onClick={() => setIsFullscreen(true)}
+              title="Expand whiteboard to full screen view"
+            >
+              <Maximize2 size={14} /> Fullscreen
+            </button>
+            <button
+              type="button"
+              className="button button-primary whiteboard-action-btn"
+              onClick={openInNewWindow}
+              title="Open whiteboard in an independent window (great for placing adjacent to another app, question paper, or Zoom screen share)"
+            >
+              <AppWindow size={14} /> New Window
+            </button>
+          </div>
+        </div>
+      )}
+
+      {isFullscreen && (
+        <div className="whiteboard-fullscreen-bar">
+          <div className="whiteboard-fullscreen-brand">
+            <span className="brand-dot" />
+            <strong>Maths Mentor Whiteboard</strong>
+            <span className="badge">Fullscreen Mode (Press Esc or Exit)</span>
+          </div>
+          <div className="whiteboard-fullscreen-controls">
+            <button
+              type="button"
+              className="button button-secondary"
+              style={{ background: '#1e293b', color: '#fff', borderColor: '#334155', minHeight: '32px', padding: '4px 12px' }}
+              onClick={() => {
+                setIframeKey((k) => k + 1);
+                setNotice('Canvas reloaded.');
+              }}
+            >
+              <RotateCcw size={13} /> Reset
+            </button>
+            <button
+              type="button"
+              className="button button-secondary"
+              style={{ background: '#1e293b', color: '#fff', borderColor: '#334155', minHeight: '32px', padding: '4px 12px' }}
+              onClick={openInNewWindow}
+              title="Open whiteboard in a standalone window adjacent to other apps"
+            >
+              <AppWindow size={13} /> New Window
+            </button>
+            <button
+              type="button"
+              className="button button-primary"
+              style={{ minHeight: '32px', padding: '4px 14px' }}
+              onClick={() => setIsFullscreen(false)}
+            >
+              <Minimize2 size={13} /> Exit Fullscreen
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className={`whiteboard-frame-container ${isFullscreen ? 'whiteboard-frame-container--fullscreen' : ''}`}>
+        <iframe
+          key={iframeKey}
+          id="teacher-whiteboard-iframe"
+          title="Online Teaching Whiteboard"
+          src="/whiteboard.html"
+          className="whiteboard-iframe"
+          allow="clipboard-read; clipboard-write; fullscreen"
+        />
+      </div>
+    </section>
+  );
+}
+
+function tabLabel(tab: string) { return ({ overview: 'Overview', whiteboard: 'Online Whiteboard', study_materials: 'Study Materials', quizzes: 'Quizzes and Worksheets', worksheets: 'Question Papers', students: 'Students', results: 'Results', ai_settings: 'AI Settings' } as Record<string, string>)[tab] ?? tab; }
 function NavItem({ active, icon, label, count, onClick }: { active: boolean; icon: React.ReactNode; label: string; count?: number; onClick: () => void }) { return <button className={`nav-item ${active ? 'active' : ''}`} onClick={onClick}>{icon}<span>{label}</span>{count !== undefined && <small>{count}</small>}</button>; }
 function Metric({ label, value, icon, tint }: { label: string; value: number | string; icon: React.ReactNode; tint: string }) { return <div className="metric"><div className={`metric-icon ${tint}`}>{icon}</div><div><span>{label}</span><strong>{value}</strong></div><div className="metric-trend">↗</div></div>; }
+
+export type UploadedSourceFile = {
+  name: string;
+  type: string;
+  data: string;
+  size: number;
+};
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+async function processSourceFile(file: File): Promise<UploadedSourceFile> {
+  // If image, resize client-side for maximum speed, snappy UX, and optimal LLM vision
+  if (file.type.startsWith('image/')) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = reject;
+      reader.onload = (e) => {
+        const rawData = e.target?.result as string;
+        const img = new window.Image();
+        img.onerror = () => {
+          resolve({
+            name: file.name,
+            type: file.type || 'image/jpeg',
+            data: rawData,
+            size: file.size,
+          });
+        };
+        img.onload = () => {
+          const maxDim = 2200;
+          let { width, height } = img;
+          if (width > maxDim || height > maxDim) {
+            if (width > height) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
+            } else {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
+            }
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(img, 0, 0, width, height);
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.90);
+            resolve({
+              name: file.name,
+              type: 'image/jpeg',
+              data: dataUrl,
+              size: Math.round(dataUrl.length * 0.75),
+            });
+          } else {
+            resolve({
+              name: file.name,
+              type: file.type || 'image/jpeg',
+              data: rawData,
+              size: file.size,
+            });
+          }
+        };
+        img.src = rawData;
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  // Document (PDF, text notes)
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = reject;
+    reader.onload = (e) => {
+      resolve({
+        name: file.name,
+        type: file.type || 'application/pdf',
+        data: e.target?.result as string,
+        size: file.size,
+      });
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function ContentSourceUploadSection({
+  files,
+  onFilesChange,
+  strictMode,
+  onStrictModeChange,
+  onPreviewImage,
+}: {
+  files: UploadedSourceFile[];
+  onFilesChange: (files: UploadedSourceFile[]) => void;
+  strictMode: boolean;
+  onStrictModeChange: (strict: boolean) => void;
+  onPreviewImage?: (dataUrl: string) => void;
+}) {
+  const [isDragging, setIsDragging] = useState(false);
+  const [processing, setProcessing] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFiles = async (selected: FileList | null) => {
+    if (!selected || selected.length === 0) return;
+    setProcessing(true);
+    try {
+      const fileList = Array.from(selected);
+      const newItems: UploadedSourceFile[] = [];
+      for (const f of fileList) {
+        const processed = await processSourceFile(f);
+        newItems.push(processed);
+      }
+      onFilesChange([...files, ...newItems]);
+    } catch (err) {
+      console.error('File reading error:', err);
+    } finally {
+      setProcessing(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const removeFile = (idx: number) => {
+    onFilesChange(files.filter((_, i) => i !== idx));
+  };
+
+  return (
+    <div className="upload-source-card">
+      <div className="upload-source-header">
+        <div className="upload-source-title">
+          <span className="title-icon"><UploadCloud size={18} /></span>
+          <span>Upload Study Materials, Chapter Scans or Sample Papers</span>
+        </div>
+        {files.length > 0 ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span className="upload-source-badge">
+              <CheckCircle2 size={13} /> {files.length} {files.length === 1 ? 'file' : 'files'} attached
+            </span>
+            <button
+              type="button"
+              className="text-button"
+              style={{ fontSize: '11.5px', color: '#ef4444', padding: '2px 6px' }}
+              onClick={() => onFilesChange([])}
+            >
+              Clear All
+            </button>
+          </div>
+        ) : (
+          <span className="upload-source-badge" style={{ background: '#f1f5f9', color: '#64748b', borderColor: '#e2e8f0' }}>
+            Optional
+          </span>
+        )}
+      </div>
+
+      <div
+        className={`upload-source-dropzone ${isDragging ? 'dragging' : ''}`}
+        onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+        onDragLeave={() => setIsDragging(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setIsDragging(false);
+          handleFiles(e.dataTransfer.files);
+        }}
+        onClick={() => fileInputRef.current?.click()}
+      >
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept="image/*,application/pdf,.txt,.md"
+          style={{ display: 'none' }}
+          onChange={(e) => handleFiles(e.target.files)}
+        />
+        <div className="dropzone-icon-wrap">
+          {processing ? <RefreshCw size={20} className="spin" /> : <UploadCloud size={20} />}
+        </div>
+        <div className="dropzone-prompt-text">
+          {processing ? 'Processing uploaded files...' : 'Click to Browse or Drag & Drop Files Here'}
+        </div>
+        <div className="dropzone-sub-text">
+          Upload sample papers, photos or scans of textbook chapters, exercise sheets, or diagram images.
+        </div>
+        <div className="dropzone-pills">
+          <span className="dropzone-pill">📸 Book Chapter Scans (JPG, PNG)</span>
+          <span className="dropzone-pill">📄 Sample Question Papers (PDF)</span>
+          <span className="dropzone-pill">📝 Text Notes (.txt, .md)</span>
+        </div>
+      </div>
+
+      {files.length > 0 && (
+        <div className="upload-source-list">
+          {files.map((file, idx) => {
+            const isImg = file.type.startsWith('image/');
+            const isPdf = file.type.includes('pdf');
+            return (
+              <div key={idx} className="upload-source-item">
+                {isImg ? (
+                  <img
+                    src={file.data}
+                    alt={file.name}
+                    className="upload-item-thumb"
+                    title="Click to preview full size"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (onPreviewImage) onPreviewImage(file.data);
+                    }}
+                  />
+                ) : (
+                  <div className="upload-item-doc-icon">
+                    {isPdf ? 'PDF' : <FileText size={18} />}
+                  </div>
+                )}
+                <div className="upload-item-details">
+                  <span className="upload-item-name" title={file.name}>{file.name}</span>
+                  <span className="upload-item-meta">{formatFileSize(file.size)}</span>
+                </div>
+                <button
+                  type="button"
+                  className="upload-item-remove"
+                  title="Remove this file"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    removeFile(idx);
+                  }}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Strict Mode Toggle Box */}
+      <div className={`strict-toggle-box ${strictMode ? 'strict-active' : 'strict-inactive'}`}>
+        <div className="strict-toggle-info">
+          <div className="strict-toggle-label">
+            {strictMode ? <Lock size={15} /> : <Sparkles size={15} />}
+            <span>
+              {strictMode
+                ? 'Strict Mode: Generate EXCLUSIVELY from Uploaded Content'
+                : 'Standard AI Mode: LLM Knowledge + Upload Reference'}
+            </span>
+          </div>
+          <div className="strict-toggle-desc">
+            {strictMode
+              ? 'AI will strictly construct questions, options, and solutions ONLY from your uploaded files and scans. Outside LLM content is restricted.'
+              : 'AI generates questions using general curriculum intelligence, using any uploaded files as helpful reference and style guide.'}
+          </div>
+        </div>
+        <label className="modern-switch" title={strictMode ? 'Strict Mode is ON' : 'Strict Mode is OFF'}>
+          <input
+            type="checkbox"
+            checked={strictMode}
+            onChange={(e) => onStrictModeChange(e.target.checked)}
+          />
+          <span className="modern-switch-slider"></span>
+        </label>
+      </div>
+
+      {strictMode && files.length === 0 && (
+        <div className="strict-mode-warning-note">
+          <CircleHelp size={16} style={{ flexShrink: 0 }} />
+          <span>
+            <strong>Note:</strong> Strict Mode is enabled, but no files have been uploaded yet. Please attach at least one chapter scan or sample paper above, or toggle Strict Mode off to generate from general AI curriculum knowledge.
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function AIQuizModal({ onClose, onGenerated, onNavigateToAISettings }: { onClose: () => void; onGenerated: (quiz: { title: string; mode: Mode; hasTimer?: boolean; minutes?: number; questions: Question[] }) => void; onNavigateToAISettings?: () => void }) {
   const [subject, setSubject] = useState('Science');
@@ -531,6 +1023,9 @@ function AIQuizModal({ onClose, onGenerated, onNavigateToAISettings }: { onClose
   const [hasTimer, setHasTimer] = useState(false);
   const [minutes, setMinutes] = useState(20);
   const [details, setDetails] = useState('');
+  const [sourceFiles, setSourceFiles] = useState<UploadedSourceFile[]>([]);
+  const [strictMode, setStrictMode] = useState(false);
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState('');
 
@@ -540,13 +1035,31 @@ function AIQuizModal({ onClose, onGenerated, onNavigateToAISettings }: { onClose
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!topic.trim()) { setError('Please enter a topic.'); return; }
+    if (strictMode && sourceFiles.length === 0) {
+      setError('Please upload at least one sample paper, chapter scan, or image to generate strictly from uploaded content.');
+      return;
+    }
     setError('');
     setGenerating(true);
     try {
       const finalSubject = subject === 'Other' ? (customSubject || 'General') : subject;
       const res = await api<{ title: string; questions: Question[] }>('/api/ai/generate-quiz', {
         method: 'POST',
-        body: JSON.stringify({ subject: finalSubject, grade, topic, subtopics, difficulty, questionCount, questionType, mode, details, provider, apiKey: apiKey.trim() || undefined }),
+        body: JSON.stringify({
+          subject: finalSubject,
+          grade,
+          topic,
+          subtopics,
+          difficulty,
+          questionCount,
+          questionType,
+          mode,
+          details,
+          provider,
+          apiKey: apiKey.trim() || undefined,
+          strictSourceContent: strictMode,
+          uploadedFiles: sourceFiles.length > 0 ? sourceFiles : undefined,
+        }),
       });
       onGenerated({ title: res.title, mode, hasTimer, minutes, questions: res.questions });
     } catch (cause) {
@@ -653,6 +1166,15 @@ function AIQuizModal({ onClose, onGenerated, onNavigateToAISettings }: { onClose
         </label>
       </div>
 
+      {/* Upload Study Materials, Chapter Scans, Sample Papers & Strict Toggle */}
+      <ContentSourceUploadSection
+        files={sourceFiles}
+        onFilesChange={setSourceFiles}
+        strictMode={strictMode}
+        onStrictModeChange={setStrictMode}
+        onPreviewImage={setPreviewImage}
+      />
+
       <div className="form-grid-2">
         <div className="field compact-field" style={{ gridColumn: '1 / -1' }}>
           <span>Quiz Delivery Mode</span>
@@ -701,6 +1223,15 @@ function AIQuizModal({ onClose, onGenerated, onNavigateToAISettings }: { onClose
           {generating ? <><RefreshCw size={16} className="spin" /> Generating {questionCount} Questions...</> : <><Sparkles size={16} /> Generate {questionCount} Questions</>}
         </button>
       </div>
+
+      {previewImage && (
+        <div className="word-doc-modal-overlay" style={{ zIndex: 1100 }} onClick={() => setPreviewImage(null)}>
+          <img src={previewImage} alt="Uploaded material preview" style={{ maxWidth: '90vw', maxHeight: '85vh', objectFit: 'contain', borderRadius: '8px' }} />
+          <button className="icon-button quiet" style={{ position: 'absolute', top: '-15px', right: '-15px', background: '#ffffff', borderRadius: '50%', boxShadow: '0 2px 8px rgba(0,0,0,0.2)' }} onClick={() => setPreviewImage(null)}>
+            <X size={18} />
+          </button>
+        </div>
+      )}
     </form>
   );
 }
@@ -712,7 +1243,7 @@ function QuizList({ quizzes, onEdit, onSelect, onOpenAI, onRefresh, setNotice, o
     catch (cause) { setNotice(cause instanceof Error ? cause.message : 'Unable to delete quiz.'); }
   }
   if (!quizzes.length) return <div className="empty-state"><span className="empty-icon"><Sparkles size={26} /></span><h3>Your first quiz starts here.</h3><p>Build a live classroom round or generate an AI quiz in seconds.</p><div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', justifyContent: 'center' }}><button className="button button-primary" onClick={onOpenAI}><Sparkles size={17} /> Generate with AI</button><button className="button button-secondary" onClick={() => onEdit({ id: '', title: '', mode: 'LIVE', status: 'DRAFT', currentQuestionIndex: 0, currentAnswerRevealed: false, timeLimitSeconds: null, showResults: true })}><Plus size={16} /> Create manually</button></div></div>;
-  return <div className="quiz-list">{quizzes.map((quiz) => <article className="quiz-row" key={quiz.id}><div className={`quiz-mode-icon ${quiz.mode === 'LIVE' ? 'mode-live' : 'mode-timed'}`}>{quiz.mode === 'LIVE' ? <Radio size={19} /> : <Clock3 size={19} />}</div><button className="quiz-row-main" onClick={() => onSelect(quiz)}><strong>{quiz.title}</strong><span>{quiz.mode === 'LIVE' ? 'Live classroom' : quiz.timeLimitSeconds !== null ? `${Math.round(quiz.timeLimitSeconds / 60)} min · Self-paced` : 'Self Paced'} <i /> {quiz._count?.questions ?? 0} questions <i /> {quiz._count?.attempts ?? 0} attempts</span></button><StatusPill status={quiz.status} /><div className="quiz-row-actions">{onRestart && <button className="icon-button" title="Restart quiz (reset to Question 1)" aria-label={`Restart ${quiz.title}`} onClick={() => onRestart(quiz)}><RotateCcw size={15} /></button>}<button className="icon-button" title="Edit quiz" aria-label={`Edit ${quiz.title}`} disabled={quiz.status === 'ACTIVE'} onClick={() => onEdit(quiz)}><Pencil size={15} /></button><button className="icon-button danger-hover" title="Delete quiz" aria-label={`Delete ${quiz.title}`} onClick={() => void remove(quiz)}><Trash2 size={15} /></button></div></article>)}</div>;
+  return <div className="quiz-list">{quizzes.map((quiz) => <article className="quiz-row" key={quiz.id}><div className={`quiz-mode-icon ${quiz.mode === 'LIVE' ? 'mode-live' : 'mode-timed'}`}>{quiz.mode === 'LIVE' ? <Radio size={19} /> : <Clock3 size={19} />}</div><button className="quiz-row-main" onClick={() => onSelect(quiz)}><strong>{quiz.title}</strong><span>{quiz.mode === 'LIVE' ? 'Live classroom' : quiz.timeLimitSeconds !== null ? `${Math.round(quiz.timeLimitSeconds / 60)} min · Self-paced` : 'Self Paced'} <i /> {quiz._count?.questions ?? 0} questions <i /> {quiz._count?.attempts ?? 0} attempts</span></button><StatusPill status={quiz.status} /><div className="quiz-row-actions">{onRestart && <button className="icon-button" title="Restart quiz for unsubmitted students (reset to Question 1)" aria-label={`Restart ${quiz.title}`} onClick={() => onRestart(quiz)}><RotateCcw size={15} /></button>}<button className="icon-button" title="Edit quiz" aria-label={`Edit ${quiz.title}`} disabled={quiz.status === 'ACTIVE'} onClick={() => onEdit(quiz)}><Pencil size={15} /></button><button className="icon-button danger-hover" title="Delete quiz" aria-label={`Delete ${quiz.title}`} onClick={() => void remove(quiz)}><Trash2 size={15} /></button></div></article>)}</div>;
 }
 function StatusPill({ status }: { status: Status }) { return <span className={`status-pill status-${status.toLowerCase()}`}><i />{status === 'ACTIVE' ? 'Live' : status === 'CLOSED' ? 'Finished' : 'Draft'}</span>; }
 
@@ -794,10 +1325,10 @@ function QuizManager({ quizzes, selectedQuiz, setSelectedQuiz, liveQuiz, refresh
   }
 
   async function restartQuiz(quiz: Quiz) {
-    if (!window.confirm(`Restart "${quiz.title}"? This will clear student attempt history and reset the quiz to Question 1.`)) return;
+    if (!window.confirm(`Restart "${quiz.title}" for students who have not submitted? Completed student submissions will remain saved.`)) return;
     try {
       await api(`/api/quizzes/${quiz.id}/restart`, { method: 'POST' });
-      setNotice(`"${quiz.title}" has been restarted.`);
+      setNotice(`"${quiz.title}" restarted for unsubmitted students.`);
       await refresh();
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : 'Unable to restart quiz.');
@@ -1065,7 +1596,7 @@ function QuizManager({ quizzes, selectedQuiz, setSelectedQuiz, liveQuiz, refresh
                     <button className="button button-quiet" onClick={() => void control('stop')}>
                       <X size={17} /> End quiz
                     </button>
-                    <button className="button button-quiet" onClick={() => void restartQuiz(liveQuiz)}>
+                    <button className="button button-quiet" title="Restart quiz for students who have not submitted" onClick={() => void restartQuiz(liveQuiz)}>
                       <RotateCcw size={16} /> Restart quiz
                     </button>
                   </>
@@ -1074,7 +1605,7 @@ function QuizManager({ quizzes, selectedQuiz, setSelectedQuiz, liveQuiz, refresh
                     <div className="finished-note">
                       <CheckCircle2 size={16} /> This live quiz has finished
                     </div>
-                    <button className="button button-secondary" onClick={() => void restartQuiz(liveQuiz)}>
+                    <button className="button button-secondary" title="Restart quiz for students who have not submitted" onClick={() => void restartQuiz(liveQuiz)}>
                       <RotateCcw size={16} /> Restart quiz
                     </button>
                   </div>
@@ -1101,7 +1632,7 @@ function QuizManager({ quizzes, selectedQuiz, setSelectedQuiz, liveQuiz, refresh
                   <button className="button button-quiet" style={{ flex: 1 }} onClick={() => void setTimedStatus(liveQuiz, 'stop')}>
                     <X size={16} /> Close quiz
                   </button>
-                  <button className="button button-secondary" onClick={() => void restartQuiz(liveQuiz)}>
+                  <button className="button button-secondary" title="Restart quiz for students who have not submitted" onClick={() => void restartQuiz(liveQuiz)}>
                     <RotateCcw size={16} /> Restart
                   </button>
                 </div>
@@ -1110,7 +1641,7 @@ function QuizManager({ quizzes, selectedQuiz, setSelectedQuiz, liveQuiz, refresh
                   <span className="finished-note">
                     <CheckCircle2 size={16} /> Practice quiz closed
                   </span>
-                  <button className="button button-secondary" onClick={() => void restartQuiz(liveQuiz)}>
+                  <button className="button button-secondary" title="Restart quiz for students who have not submitted" onClick={() => void restartQuiz(liveQuiz)}>
                     <RotateCcw size={16} /> Restart quiz
                   </button>
                 </div>
@@ -1385,7 +1916,7 @@ function StudentManager({ students, refresh, setNotice, onBackToClassroom }: { s
     </section>);
 }
 
-function ResultsPanel({ quizzes, selectedQuiz, setSelectedQuiz, results, distribution, onExport }: { quizzes: Quiz[]; selectedQuiz: string; setSelectedQuiz: (id: string) => void; results: Result[]; distribution: { question: string; options: { text: string; correct: boolean; count: number }[] }[]; onExport: () => void }) {
+function ResultsPanel({ quizzes, selectedQuiz, setSelectedQuiz, results, distribution, onExport, onResetAttempt }: { quizzes: Quiz[]; selectedQuiz: string; setSelectedQuiz: (id: string) => void; results: Result[]; distribution: { question: string; options: { text: string; correct: boolean; count: number }[] }[]; onExport: () => void; onResetAttempt: (result: Result) => Promise<void> }) {
   const quiz = quizzes.find((entry) => entry.id === selectedQuiz);
   const submitted = results.filter((result) => result.status === 'SUBMITTED');
   const average = submitted.length ? Math.round(submitted.reduce((sum, result) => sum + (result.score ?? 0) / Math.max(1, result.totalMarks) * 100, 0) / submitted.length) : 0;
@@ -1405,7 +1936,48 @@ function ResultsPanel({ quizzes, selectedQuiz, setSelectedQuiz, results, distrib
         </div>
       </div>
       {showStudentScores && (
-        results.length ? <div className="results-list">{results.map((result, index) => <div className="result-student" key={result.id}><button className="result-summary" onClick={() => setExpanded(expanded === result.id ? '' : result.id)}><span className={`avatar avatar-roster avatar-color-${index % 4}`}>{result.name.slice(0, 1).toUpperCase()}</span><span className="result-name"><strong>{result.name}</strong><small>{result.status === 'SUBMITTED' ? 'Submitted' : 'In progress'}</small></span><strong className="result-score">{result.score === null ? '—' : `${result.score} / ${result.totalMarks}`}</strong><ChevronDown size={16} className={expanded === result.id ? 'rotate-chevron' : ''} /></button>{expanded === result.id && <div className="answer-review">{result.answers.length ? result.answers.map((answer, answerIndex) => <div className="answer-review-row" key={answerIndex}><span className={`answer-mark ${answer.correct ? 'mark-correct' : 'mark-wrong'}`}>{answer.correct ? <Check size={13} /> : <X size={13} />}</span><div><strong>{answer.question}</strong><span>{answer.response} · {answer.correct ? `${answer.marks} point${answer.marks === 1 ? '' : 's'}` : 'Incorrect'}</span></div></div>) : <span className="muted">No answers saved.</span>}</div>}</div>)}</div> : <div className="roster-empty">No one has joined this quiz yet.</div>
+        results.length ? <div className="results-list">{results.map((result, index) => <div className="result-student" key={result.id}>
+          <div className="result-summary-row">
+            <button className="result-summary" onClick={() => setExpanded(expanded === result.id ? '' : result.id)}>
+              <span className={`avatar avatar-roster avatar-color-${index % 4}`}>{result.name.slice(0, 1).toUpperCase()}</span>
+              <span className="result-name">
+                <strong>{result.name}</strong>
+                <small>{result.status === 'SUBMITTED' ? 'Submitted' : 'In progress'}</small>
+              </span>
+              <strong className="result-score">{result.score === null ? '—' : `${result.score} / ${result.totalMarks}`}</strong>
+              <ChevronDown size={16} className={expanded === result.id ? 'rotate-chevron' : ''} />
+            </button>
+            <div className="result-summary-actions">
+              <button
+                className="result-restart-btn"
+                title={`Reset quiz for ${result.name} so they can retake it`}
+                aria-label={`Reset quiz for ${result.name}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void onResetAttempt(result);
+                }}
+              >
+                <RotateCcw size={13} /> Restart Quiz
+              </button>
+            </div>
+          </div>
+          {expanded === result.id && <div className="answer-review">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', paddingBottom: '8px', borderBottom: '1px solid #e2e8f0', flexWrap: 'wrap', gap: '8px' }}>
+              <span style={{ fontSize: '13px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                Submitted Answers ({result.answers.length})
+              </span>
+              <button
+                className="result-restart-btn"
+                style={{ minHeight: '30px', padding: '4px 10px' }}
+                title={`Reset quiz for ${result.name} so they can retake it`}
+                onClick={() => void onResetAttempt(result)}
+              >
+                <RotateCcw size={13} /> Restart Quiz for {result.name}
+              </button>
+            </div>
+            {result.answers.length ? result.answers.map((answer, answerIndex) => <div className="answer-review-row" key={answerIndex}><span className={`answer-mark ${answer.correct ? 'mark-correct' : 'mark-wrong'}`}>{answer.correct ? <Check size={13} /> : <X size={13} />}</span><div><strong>{answer.question}</strong><span>{answer.response} · {answer.correct ? `${answer.marks} point${answer.marks === 1 ? '' : 's'}` : 'Incorrect'}</span></div></div>) : <span className="muted">No answers saved.</span>}
+          </div>}
+        </div>)}</div> : <div className="roster-empty">No one has joined this quiz yet.</div>
       )}
     </div>
 
@@ -1426,8 +1998,17 @@ function ResultsPanel({ quizzes, selectedQuiz, setSelectedQuiz, results, distrib
   </div></> : <div className="empty-state"><span className="empty-icon"><BarChart3 size={22} /></span><h3>Choose a quiz to see its story.</h3><p>Individual scores and response patterns will appear here.</p></div>}</section>;
 }
 
-function StudentApp({ user, onSignOut, notice, setNotice }: { user: User; onSignOut: () => void; notice: string; setNotice: (text: string) => void }) {
-  const [tab, setTab] = useState<'open' | 'quiz_history' | 'paper_history'>('open');
+function StudentApp({ user, onSignOut, notice, setNotice, onViewPortal }: { user: User; onSignOut: () => void; notice: string; setNotice: (text: string) => void; onViewPortal?: () => void }) {
+  const [tab, setTabState] = useState<'open' | 'quiz_history' | 'paper_history'>(() => {
+    const saved = localStorage.getItem('student_active_tab') as any;
+    const validTabs = ['open', 'quiz_history', 'paper_history'];
+    return validTabs.includes(saved) ? saved : 'open';
+  });
+
+  const setTab = (newTab: 'open' | 'quiz_history' | 'paper_history') => {
+    setTabState(newTab);
+    localStorage.setItem('student_active_tab', newTab);
+  };
   const [quizzes, setQuizzes] = useState<StudentQuiz[]>([]);
   const [activeQuiz, setActiveQuiz] = useState<ActiveQuiz | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1439,6 +2020,8 @@ function StudentApp({ user, onSignOut, notice, setNotice }: { user: User; onSign
   const [submitting, setSubmitting] = useState(false);
   const socketRef = useRef<Socket | null>(null);
   const submittedRef = useRef(false);
+  const activeQuizRef = useRef<ActiveQuiz | null>(null);
+  activeQuizRef.current = activeQuiz;
 
   async function joinQuiz(quizId: string) {
     setError('');
@@ -1475,10 +2058,40 @@ function StudentApp({ user, onSignOut, notice, setNotice }: { user: User; onSign
   useEffect(() => {
     const socket = io({ withCredentials: true, transports: ['websocket', 'polling'] });
     socket.on('quiz:lobby_updated', () => {
-      void api<{ quizzes: StudentQuiz[] }>('/api/student/quizzes').then((data) => setQuizzes(data.quizzes)).catch(() => undefined);
+      void api<{ quizzes: StudentQuiz[] }>('/api/student/quizzes').then((data) => {
+        setQuizzes(data.quizzes);
+        const currentActive = activeQuizRef.current;
+        // If the student has already submitted, do not reset their active view
+        if (currentActive && currentActive.attempt?.status !== 'SUBMITTED') {
+          const fresh = data.quizzes.find((q) => q.id === currentActive.id);
+          if (!fresh || fresh.status === 'DRAFT' || !fresh.attempt) {
+            setAnswers({});
+            setQuestionIndex(0);
+            submittedRef.current = false;
+            setActiveQuiz((prev) => prev ? {
+              ...prev,
+              status: fresh ? fresh.status : 'DRAFT',
+              currentQuestionIndex: 0,
+              currentAnswerRevealed: false,
+              attempt: null,
+            } : null);
+          }
+        }
+      }).catch(() => undefined);
+    });
+    socket.on('quiz:attempt_reset', (data: { quizId: string; studentId: string; studentName: string }) => {
+      if (user.id && user.id !== data.studentId) return;
+      setNotice('Your teacher has reset this quiz so you can try again!');
+      setAnswers({});
+      setQuestionIndex(0);
+      submittedRef.current = false;
+      sessionStorage.removeItem('activeQuizId');
+      setActiveQuiz(null);
+      setTab('open');
+      void loadQuizzes();
     });
     return () => { socket.disconnect(); };
-  }, []);
+  }, [user.id]);
   useEffect(() => {
     if (activeQuiz) return;
     const timer = window.setInterval(() => {
@@ -1488,15 +2101,46 @@ function StudentApp({ user, onSignOut, notice, setNotice }: { user: User; onSign
   }, [activeQuiz?.id]);
   useEffect(() => { if (notice) { const timer = window.setTimeout(() => setNotice(''), 3000); return () => window.clearTimeout(timer); } }, [notice]);
 
-  const activeQuizRef = useRef<ActiveQuiz | null>(null);
-  activeQuizRef.current = activeQuiz;
-
   useEffect(() => {
     const currentQuiz = activeQuizRef.current;
-    if (!currentQuiz || currentQuiz.status !== 'ACTIVE') return;
+    if (!currentQuiz) return;
     const socket = io({ withCredentials: true, transports: ['websocket', 'polling'] });
     socketRef.current = socket;
     socket.on('connect', () => socket.emit('watch:quiz', currentQuiz.id));
+
+    socket.on('quiz:restarted', (data: { quizId: string }) => {
+      const liveId = activeQuizRef.current?.id;
+      if (!liveId || liveId !== data.quizId) return;
+      // For kids who have already submitted, nothing should change!
+      if (activeQuizRef.current?.attempt?.status === 'SUBMITTED') return;
+      // For kids who have not submitted, restart to Question 1:
+      setAnswers({});
+      setQuestionIndex(0);
+      submittedRef.current = false;
+      sessionStorage.removeItem('activeQuizId');
+      setActiveQuiz((prev) => prev ? {
+        ...prev,
+        status: 'DRAFT',
+        currentQuestionIndex: 0,
+        currentAnswerRevealed: false,
+        attempt: null,
+      } : null);
+      void loadQuizzes();
+    });
+
+    socket.on('quiz:attempt_reset', (data: { quizId: string; studentId: string; studentName: string }) => {
+      const liveId = activeQuizRef.current?.id;
+      if (!liveId || liveId !== data.quizId) return;
+      if (user.id && user.id !== data.studentId) return;
+      setNotice('Your teacher has reset this quiz so you can try again!');
+      setAnswers({});
+      setQuestionIndex(0);
+      submittedRef.current = false;
+      sessionStorage.removeItem('activeQuizId');
+      setActiveQuiz(null);
+      void loadQuizzes();
+    });
+
     socket.on('quiz:state', (state: { status: Status; currentQuestionIndex: number; currentAnswerRevealed: boolean; questionCount?: number; totalMarks?: number; question: Question | null }) => {
       const liveId = activeQuizRef.current?.id;
       if (state.status === 'CLOSED' && liveId) {
@@ -1508,6 +2152,25 @@ function StudentApp({ user, onSignOut, notice, setNotice }: { user: User; onSign
           }
           submittedRef.current = quiz.attempt?.status === 'SUBMITTED';
         }).catch(() => undefined);
+        void loadQuizzes();
+        return;
+      }
+      if (state.status === 'DRAFT' && liveId) {
+        // Teacher restarted quiz to DRAFT
+        if (activeQuizRef.current?.attempt?.status === 'SUBMITTED') {
+          // Submitted kids: nothing changes
+          return;
+        }
+        setAnswers({});
+        setQuestionIndex(0);
+        submittedRef.current = false;
+        setActiveQuiz((prev) => prev ? {
+          ...prev,
+          status: 'DRAFT',
+          currentQuestionIndex: 0,
+          currentAnswerRevealed: false,
+          attempt: null,
+        } : null);
         void loadQuizzes();
         return;
       }
@@ -1531,7 +2194,7 @@ function StudentApp({ user, onSignOut, notice, setNotice }: { user: User; onSign
       }
     });
     return () => { socket.disconnect(); socketRef.current = null; };
-  }, [activeQuiz?.id, activeQuiz?.status]);
+  }, [activeQuiz?.id]);
 
   useEffect(() => {
     if (!activeQuiz) return;
@@ -1759,6 +2422,14 @@ function StudentApp({ user, onSignOut, notice, setNotice }: { user: User; onSign
             label="Question Papers History"
             onClick={() => setTab('paper_history')}
           />
+          {onViewPortal && (
+            <NavItem
+              active={false}
+              icon={<BookOpen size={17} />}
+              label="Study Material Hub"
+              onClick={onViewPortal}
+            />
+          )}
         </nav>
         <div className="sidebar-bottom">
           <div className="teacher-profile">
@@ -1781,6 +2452,11 @@ function StudentApp({ user, onSignOut, notice, setNotice }: { user: User; onSign
             Your classroom <span>/</span> <strong>{tab === 'open' ? 'Open Classroom' : tab === 'quiz_history' ? 'Quiz History' : 'Question Papers History'}</strong>
           </div>
           <div className="topbar-actions">
+            {onViewPortal && (
+              <button className="button button-secondary" style={{ fontSize: '13px', padding: '5px 12px', minHeight: '34px', gap: '6px' }} onClick={onViewPortal} title="Browse public revision notes, videos & formulas">
+                <BookOpen size={14} /> Study Materials Hub
+              </button>
+            )}
             {tab !== 'open' ? (
               <button className="button button-secondary" style={{ fontSize: '13px', padding: '5px 12px', minHeight: '34px', gap: '6px' }} onClick={() => setTab('open')}>
                 <ArrowLeft size={14} /> Back to Classroom
@@ -2669,6 +3345,9 @@ function AIWorksheetModal({ onClose, onGenerated, onNavigateToAISettings }: { on
   const [questionCount, setQuestionCount] = useState(10);
   const [totalMarks, setTotalMarks] = useState(100);
   const [details, setDetails] = useState('');
+  const [sourceFiles, setSourceFiles] = useState<UploadedSourceFile[]>([]);
+  const [strictMode, setStrictMode] = useState(false);
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState('');
 
@@ -2683,12 +3362,28 @@ function AIWorksheetModal({ onClose, onGenerated, onNavigateToAISettings }: { on
       setError('Please enter your custom subject name.');
       return;
     }
+    if (strictMode && sourceFiles.length === 0) {
+      setError('Please upload at least one sample paper, chapter scan, or image to generate strictly from uploaded content.');
+      return;
+    }
     setGenerating(true);
     setError('');
     try {
       await api('/api/worksheets/ai-generate', {
         method: 'POST',
-        body: JSON.stringify({ subject: activeSubject, grade, topic, subtopics, questionCount, totalMarks, details, provider, apiKey: apiKey.trim() || undefined }),
+        body: JSON.stringify({
+          subject: activeSubject,
+          grade,
+          topic,
+          subtopics,
+          questionCount,
+          totalMarks,
+          details,
+          provider,
+          apiKey: apiKey.trim() || undefined,
+          strictSourceContent: strictMode,
+          uploadedFiles: sourceFiles.length > 0 ? sourceFiles : undefined,
+        }),
       });
       onGenerated();
     } catch (err) {
@@ -2772,6 +3467,15 @@ function AIWorksheetModal({ onClose, onGenerated, onNavigateToAISettings }: { on
         </label>
       </div>
 
+      {/* Upload Study Materials, Chapter Scans, Sample Papers & Strict Toggle */}
+      <ContentSourceUploadSection
+        files={sourceFiles}
+        onFilesChange={setSourceFiles}
+        strictMode={strictMode}
+        onStrictModeChange={setStrictMode}
+        onPreviewImage={setPreviewImage}
+      />
+
       <label className="field compact-field">
         <span>Special Instructions for AI (Optional)</span>
         <textarea rows={3} value={details} onChange={(e) => setDetails(e.target.value)} placeholder="e.g. Include 2 problem solving questions and clear student instructions." />
@@ -2783,6 +3487,15 @@ function AIWorksheetModal({ onClose, onGenerated, onNavigateToAISettings }: { on
           {generating ? <><RefreshCw size={16} className="spin" /> Generating Paper...</> : <><Sparkles size={16} /> Generate Question Paper</>}
         </button>
       </div>
+
+      {previewImage && (
+        <div className="word-doc-modal-overlay" style={{ zIndex: 1100 }} onClick={() => setPreviewImage(null)}>
+          <img src={previewImage} alt="Uploaded material preview" style={{ maxWidth: '90vw', maxHeight: '85vh', objectFit: 'contain', borderRadius: '8px' }} />
+          <button className="icon-button quiet" style={{ position: 'absolute', top: '-15px', right: '-15px', background: '#ffffff', borderRadius: '50%', boxShadow: '0 2px 8px rgba(0,0,0,0.2)' }} onClick={() => setPreviewImage(null)}>
+            <X size={18} />
+          </button>
+        </div>
+      )}
     </form>
   );
 }
