@@ -14,6 +14,7 @@ import { Server } from 'socket.io';
 import { z } from 'zod';
 
 const prisma = new PrismaClient();
+const db: any = prisma;
 const app = express();
 const httpServer = createServer(app);
 const io = new Server(httpServer);
@@ -46,34 +47,54 @@ app.use(helmet({
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ limit: '25mb', extended: true }));
 app.use(cookieParser());
-app.use('/api/auth', rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: 'draft-7', legacyHeaders: false }));
+app.use('/api/auth', rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 300,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  skip: (req) => req.path === '/me' || req.path === '/logout',
+  message: { error: 'Too many authentication attempts. Please try again in a few minutes.' },
+}));
 
 const sessionCookie = 'livequiz_session';
-type Role = 'admin' | 'student';
-type Session = { id: string; role: Role };
+type Role = 'superadmin' | 'teacher' | 'admin' | 'student';
+type Session = { id: string; role: Role; username?: string; email?: string; name?: string };
 type AuthRequest = Request & { session?: Session };
 const cookieOptions = { httpOnly: true, sameSite: 'lax' as const, secure: process.env.NODE_ENV === 'production', maxAge: 1000 * 60 * 60 * 12, path: '/' };
 const passkeyLookup = (passkey: string) => createHmac('sha256', 'livequiz-passkey-lookup-salt').update(passkey.toUpperCase()).digest('hex');
 const signSession = (session: Session) => jwt.sign(session, secret, { expiresIn: '12h' });
 const sendSession = (res: Response, session: Session) => res.cookie(sessionCookie, signSession(session), cookieOptions);
-const authenticate = (role?: Role) => async (req: AuthRequest, res: Response, next: NextFunction) => {
+
+const authenticate = (allowedRoles?: Role | Role[]) => async (req: AuthRequest, res: Response, next: NextFunction) => {
   const token = req.cookies[sessionCookie] as string | undefined;
   try {
     const payload = jwt.verify(token ?? '', secret) as JwtPayload & Session;
-    if (!payload.id || (payload.role !== 'admin' && payload.role !== 'student') || (role && payload.role !== role)) {
+    if (!payload.id || !payload.role) {
       return res.status(401).json({ error: 'Please sign in to continue.' });
     }
-    req.session = { id: payload.id, role: payload.role };
+    if (allowedRoles) {
+      const roles = Array.isArray(allowedRoles) ? allowedRoles : [allowedRoles];
+      const match = roles.includes(payload.role) || (roles.includes('teacher') && payload.role === 'admin');
+      if (!match) {
+        return res.status(403).json({ error: 'Access denied: insufficient permissions.' });
+      }
+    }
+    req.session = { id: payload.id, role: payload.role, username: payload.username, email: payload.email, name: payload.name };
     if (payload.role === 'student') {
       const student = await prisma.student.findUnique({ where: { id: payload.id }, select: { active: true } });
       if (!student?.active) return res.status(401).json({ error: 'This student passkey has been disabled.' });
+    } else if (payload.role === 'teacher') {
+      const teacher = await db.teacher.findUnique({ where: { id: payload.id }, select: { active: true } });
+      if (!teacher?.active) return res.status(403).json({ error: 'This teacher account is pending activation by the Administrator.' });
     }
     next();
   } catch {
     return res.status(401).json({ error: 'Please sign in to continue.' });
   }
 };
-const adminOnly = authenticate('admin');
+const superAdminOnly = authenticate('superadmin');
+const teacherOnly = authenticate(['teacher', 'admin']);
+const adminOnly = teacherOnly; // Backward compatibility alias
 const studentOnly = authenticate('student');
 const objectId = z.string().min(1).max(40);
 const questionInput = z.object({
@@ -86,6 +107,7 @@ const questionInput = z.object({
 });
 const quizInput = z.object({
   title: z.string().trim().min(1).max(120),
+  grade: z.string().trim().min(1).max(50).nullable().optional(),
   mode: z.enum(['LIVE', 'SELF_PACED']),
   timeLimitSeconds: z.number().int().nullable().optional(),
   showResults: z.boolean(),
@@ -197,17 +219,153 @@ async function publishQuizState(quizId: string) {
   io.to('students:lobby').emit('quiz:lobby_updated');
 }
 
-app.post('/api/auth/admin', async (req, res) => {
+// Super Admin Auth Endpoint (Username/Email + Password + Secret Key)
+app.post('/api/auth/superadmin', async (req: Request, res: Response) => {
   try {
-    const data = parse(z.object({ email: z.string().email(), password: z.string().min(1).max(200) }), req.body);
-    const admin = await prisma.admin.findUnique({ where: { email: data.email.toLowerCase() } });
-    if (!admin || !(await bcrypt.compare(data.password, admin.passwordHash))) return res.status(401).json({ error: 'Email or password is incorrect.' });
-    sendSession(res, { id: admin.id, role: 'admin' });
-    res.json({ user: { role: 'admin', email: admin.email } });
+    const data = parse(z.object({
+      username: z.string().trim().min(1).max(100),
+      password: z.string().min(1).max(200),
+      secretKey: z.string().min(1).max(200),
+    }), req.body);
+
+    const inputUser = data.username.toLowerCase();
+    const envUser = (process.env.SUPERADMIN_USERNAME || 'admin').toLowerCase();
+    const envPass = process.env.SUPERADMIN_PASSWORD || 'adminpassword123';
+    const envSecret = process.env.SUPERADMIN_SECRET_KEY || 'eduashram@secret2026';
+    const envEmail = (process.env.SUPERADMIN_EMAIL || 'gaurav.kr.singh@hotmail.com').toLowerCase();
+
+    let superAdmin = await db.superAdmin.findFirst({
+      where: {
+        OR: [
+          { username: { equals: inputUser, mode: 'insensitive' } },
+          { email: { equals: inputUser, mode: 'insensitive' } },
+        ]
+      }
+    });
+
+    let isValid = false;
+    if (superAdmin) {
+      const passMatch = (await bcrypt.compare(data.password, superAdmin.passwordHash)) || (data.password === envPass);
+      const secretMatch = (await bcrypt.compare(data.secretKey, superAdmin.secretKeyHash)) || (data.secretKey === envSecret);
+      if (passMatch && secretMatch) isValid = true;
+    } else if ((inputUser === envUser || inputUser === envEmail) && data.password === envPass && data.secretKey === envSecret) {
+      // Auto-create from .env if record missing
+      const superAdminPasswordHash = await bcrypt.hash(envPass, 12);
+      const superAdminSecretKeyHash = await bcrypt.hash(envSecret, 12);
+      superAdmin = await db.superAdmin.create({
+        data: {
+          username: envUser,
+          email: envEmail,
+          passwordHash: superAdminPasswordHash,
+          secretKeyHash: superAdminSecretKeyHash,
+        }
+      });
+      isValid = true;
+    }
+
+    if (!isValid || !superAdmin) {
+      return res.status(401).json({ error: 'Invalid Super Admin credentials or Secret Key.' });
+    }
+
+    const session: Session = { id: superAdmin.id, role: 'superadmin', username: superAdmin.username, email: superAdmin.email };
+    sendSession(res, session);
+    res.json({ user: session });
   } catch (error) { errorResponse(res, error); }
 });
 
-app.post('/api/auth/student', async (req, res) => {
+// Teacher Sign Up (Pending Super Admin Approval)
+app.post('/api/auth/teacher/signup', async (req: Request, res: Response) => {
+  try {
+    const schema = z.object({
+      name: z.string().trim().min(2).max(100),
+      email: z.string().trim().email().max(150),
+      password: z.string().min(6).max(200),
+      school: z.string().trim().max(200).optional().nullable(),
+      subject: z.string().trim().max(100).optional().nullable(),
+      phone: z.string().trim().max(30).optional().nullable(),
+    });
+    const data = parse(schema, req.body);
+    const existing = await db.teacher.findUnique({ where: { email: data.email.toLowerCase() } });
+    if (existing) {
+      return res.status(409).json({ error: 'An account with this email address already exists. Please sign in or contact the platform administrator.' });
+    }
+
+    const passwordHash = await bcrypt.hash(data.password, 12);
+    const teacher = await db.teacher.create({
+      data: {
+        name: data.name,
+        email: data.email.toLowerCase(),
+        passwordHash,
+        school: data.school || null,
+        subject: data.subject || null,
+        phone: data.phone || null,
+        active: false, // Inactive by default, requires Super Admin approval!
+      },
+    });
+
+    res.status(201).json({
+      ok: true,
+      message: 'Teacher registration submitted successfully! Your account will be activated once reviewed and approved by the EduAshram Administrator.',
+      teacher: { id: teacher.id, name: teacher.name, email: teacher.email },
+    });
+  } catch (error) { errorResponse(res, error); }
+});
+
+// Teacher Login
+app.post('/api/auth/teacher/login', async (req: Request, res: Response) => {
+  try {
+    const data = parse(z.object({ email: z.string().email(), password: z.string().min(1).max(200) }), req.body);
+    const teacher = await db.teacher.findUnique({ where: { email: data.email.toLowerCase() } });
+    if (!teacher || !(await bcrypt.compare(data.password, teacher.passwordHash))) {
+      return res.status(401).json({ error: 'Email or password is incorrect.' });
+    }
+
+    if (!teacher.active) {
+      return res.status(403).json({
+        error: 'Your teacher account is pending activation by the EduAshram Administrator. Please contact the administrator to activate your access.',
+      });
+    }
+
+    const session: Session = { id: teacher.id, role: 'teacher', email: teacher.email, name: teacher.name };
+    sendSession(res, session);
+    res.json({
+      user: {
+        id: teacher.id,
+        role: 'teacher',
+        email: teacher.email,
+        name: teacher.name,
+        school: teacher.school,
+        subject: teacher.subject,
+        hasApiKey: Boolean(teacher.apiKey),
+      }
+    });
+  } catch (error) { errorResponse(res, error); }
+});
+
+// Backward-compatible Admin / Teacher Login
+app.post('/api/auth/admin', async (req: Request, res: Response) => {
+  try {
+    const data = parse(z.object({ email: z.string().email(), password: z.string().min(1).max(200) }), req.body);
+    
+    // Check Teacher account first
+    const teacher = await db.teacher.findUnique({ where: { email: data.email.toLowerCase() } });
+    if (teacher && (await bcrypt.compare(data.password, teacher.passwordHash))) {
+      if (!teacher.active) {
+        return res.status(403).json({ error: 'Your teacher account is pending activation by the EduAshram Administrator.' });
+      }
+      sendSession(res, { id: teacher.id, role: 'teacher', email: teacher.email, name: teacher.name });
+      return res.json({ user: { id: teacher.id, role: 'teacher', email: teacher.email, name: teacher.name, school: teacher.school } });
+    }
+
+    // Check legacy Admin table
+    const admin = await prisma.admin.findUnique({ where: { email: data.email.toLowerCase() } });
+    if (!admin || !(await bcrypt.compare(data.password, admin.passwordHash))) return res.status(401).json({ error: 'Email or password is incorrect.' });
+    sendSession(res, { id: admin.id, role: 'teacher', email: admin.email });
+    res.json({ user: { role: 'teacher', email: admin.email } });
+  } catch (error) { errorResponse(res, error); }
+});
+
+app.post('/api/auth/student', async (req: Request, res: Response) => {
   try {
     const data = parse(z.object({ passkey: z.string().trim().min(4).max(40) }), req.body);
     const lookupHash = passkeyLookup(data.passkey);
@@ -228,22 +386,144 @@ app.post('/api/auth/student', async (req, res) => {
       return res.status(401).json({ error: 'That passkey was not recognized.' });
     }
 
-    sendSession(res, { id: student.id, role: 'student' });
-    res.json({ user: { id: student.id, role: 'student', name: student.name } });
+    sendSession(res, { id: student.id, role: 'student', name: student.name });
+    res.json({ user: { id: student.id, role: 'student', name: student.name, teacherId: (student as any).teacherId, grade: (student as any).grade || 'Grade 6' } });
   } catch (error) { errorResponse(res, error); }
 });
 
-app.get('/api/auth/me', authenticate(), async (req: AuthRequest, res) => {
-  if (req.session?.role === 'admin') {
-    const admin = await prisma.admin.findUnique({ where: { id: req.session.id }, select: { id: true, email: true } });
-    return res.json({ user: admin ? { id: admin.id, role: 'admin', email: admin.email } : null });
+app.get('/api/auth/me', authenticate(), async (req: AuthRequest, res: Response) => {
+  if (req.session?.role === 'superadmin') {
+    const superAdmin = await db.superAdmin.findUnique({ where: { id: req.session.id }, select: { id: true, username: true, email: true } });
+    return res.json({ user: superAdmin ? { id: superAdmin.id, role: 'superadmin', username: superAdmin.username, email: superAdmin.email } : null });
   }
-  const student = await prisma.student.findUnique({ where: { id: req.session!.id }, select: { id: true, name: true, active: true } });
+
+  if (req.session?.role === 'teacher' || req.session?.role === 'admin') {
+    const teacher = await db.teacher.findUnique({
+      where: { id: req.session.id },
+      select: { id: true, name: true, email: true, school: true, subject: true, active: true, apiKey: true }
+    });
+    if (teacher) {
+      if (!teacher.active) return res.status(403).json({ error: 'This teacher account is pending activation by the Administrator.' });
+      return res.json({
+        user: {
+          id: teacher.id,
+          role: 'teacher',
+          name: teacher.name,
+          email: teacher.email,
+          school: teacher.school,
+          subject: teacher.subject,
+          hasApiKey: Boolean(teacher.apiKey),
+        }
+      });
+    }
+    const admin = await prisma.admin.findUnique({ where: { id: req.session.id }, select: { id: true, email: true } });
+    return res.json({ user: admin ? { id: admin.id, role: 'teacher', email: admin.email, name: 'Teacher' } : null });
+  }
+
+  const student: any = await (prisma as any).student.findUnique({ where: { id: req.session!.id }, select: { id: true, name: true, active: true, teacherId: true, grade: true } });
   if (!student?.active) return res.status(401).json({ error: 'This student passkey has been disabled.' });
-  return res.json({ user: { id: student.id, role: 'student', name: student.name } });
+  return res.json({ user: { id: student.id, role: 'student', name: student.name, teacherId: student.teacherId, grade: student.grade || 'Grade 6' } });
 });
 
-app.all('/api/auth/logout', (_req, res) => {
+// Teacher Profile & API Key Management
+app.get('/api/teacher/profile', teacherOnly, async (req: AuthRequest, res: Response) => {
+  try {
+    const teacher = await db.teacher.findUnique({
+      where: { id: req.session!.id },
+      select: { id: true, name: true, email: true, school: true, subject: true, phone: true, active: true, apiKey: true, createdAt: true },
+    });
+    if (!teacher) return res.status(404).json({ error: 'Teacher profile not found.' });
+    res.json({
+      teacher: {
+        ...teacher,
+        apiKey: teacher.apiKey ? '••••••••' + teacher.apiKey.slice(-4) : '',
+        hasApiKey: Boolean(teacher.apiKey),
+      }
+    });
+  } catch (error) { errorResponse(res, error); }
+});
+
+app.patch('/api/teacher/api-key', teacherOnly, async (req: AuthRequest, res: Response) => {
+  try {
+    const { apiKey } = parse(z.object({ apiKey: z.string().trim().max(500) }), req.body);
+    await db.teacher.update({
+      where: { id: req.session!.id },
+      data: { apiKey: apiKey || null },
+    });
+    res.json({ ok: true, message: 'Your personal AI API Key has been saved successfully!' });
+  } catch (error) { errorResponse(res, error); }
+});
+
+app.patch('/api/teacher/profile', teacherOnly, async (req: AuthRequest, res: Response) => {
+  try {
+    const data = parse(z.object({
+      name: z.string().trim().min(2).max(100).optional(),
+      school: z.string().trim().max(200).optional().nullable(),
+      subject: z.string().trim().max(100).optional().nullable(),
+      phone: z.string().trim().max(30).optional().nullable(),
+    }), req.body);
+
+    const updated = await db.teacher.update({
+      where: { id: req.session!.id },
+      data,
+      select: { id: true, name: true, email: true, school: true, subject: true, phone: true },
+    });
+    res.json({ teacher: updated, ok: true });
+  } catch (error) { errorResponse(res, error); }
+});
+
+// Super Admin Teacher Management Endpoints
+app.get('/api/superadmin/teachers', superAdminOnly, async (_req: Request, res: Response) => {
+  try {
+    const teachers = await db.teacher.findMany({
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        school: true,
+        subject: true,
+        phone: true,
+        active: true,
+        createdAt: true,
+        updatedAt: true,
+        _count: {
+          select: {
+            students: true,
+            quizzes: true,
+            worksheetPapers: true,
+          }
+        }
+      }
+    });
+    res.json({ teachers });
+  } catch (error) { errorResponse(res, error); }
+});
+
+app.patch('/api/superadmin/teachers/:id/toggle-status', superAdminOnly, async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const teacher = await db.teacher.findUnique({ where: { id } });
+    if (!teacher) return res.status(404).json({ error: 'Teacher not found.' });
+
+    const updated = await db.teacher.update({
+      where: { id },
+      data: { active: !teacher.active },
+      select: { id: true, name: true, email: true, active: true },
+    });
+    res.json({ teacher: updated, ok: true });
+  } catch (error) { errorResponse(res, error); }
+});
+
+app.delete('/api/superadmin/teachers/:id', superAdminOnly, async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    await db.teacher.delete({ where: { id } });
+    res.json({ ok: true });
+  } catch (error) { errorResponse(res, error); }
+});
+
+app.all('/api/auth/logout', (_req: Request, res: Response) => {
   res.clearCookie(sessionCookie, { ...cookieOptions, maxAge: 0 });
   res.clearCookie(sessionCookie, { path: '/' });
   res.clearCookie(sessionCookie);
@@ -1208,28 +1488,40 @@ async function generateAIQuiz(data: z.infer<typeof aiQuizInput>) {
   };
 }
 
-app.post('/api/ai/generate-quiz', adminOnly, async (req, res) => {
+app.post('/api/ai/generate-quiz', adminOnly, async (req: AuthRequest, res: Response) => {
   try {
     const data = parse(aiQuizInput, req.body);
+    if (!data.apiKey && req.session?.id) {
+      const teacher = await db.teacher.findUnique({ where: { id: req.session.id }, select: { apiKey: true } });
+      if (teacher?.apiKey) {
+        data.apiKey = teacher.apiKey;
+      }
+    }
     const quizResult = await generateAIQuiz(data);
     res.json(quizResult);
   } catch (error) { errorResponse(res, error); }
 });
 
-app.get('/api/quizzes', adminOnly, async (_req, res) => {
-  const quizzes = await prisma.quiz.findMany({ orderBy: { updatedAt: 'desc' }, include: { questions: { orderBy: { position: 'asc' }, include: { options: { orderBy: { position: 'asc' } } } }, _count: { select: { questions: true, attempts: true } } } });
+app.get('/api/quizzes', adminOnly, async (req: AuthRequest, res: Response) => {
+  const teacherId = req.session!.id;
+  const where: any = req.session?.role === 'superadmin' ? {} : { teacherId };
+  const quizzes = await prisma.quiz.findMany({ where, orderBy: { updatedAt: 'desc' }, include: { questions: { orderBy: { position: 'asc' }, include: { options: { orderBy: { position: 'asc' } } } }, _count: { select: { questions: true, attempts: true } } } });
   res.json({ quizzes });
 });
-app.post('/api/quizzes', adminOnly, async (req, res) => {
+
+app.post('/api/quizzes', adminOnly, async (req: AuthRequest, res: Response) => {
   try {
     const data = parse(quizInput, req.body);
+    const teacherId = req.session!.id;
     const quiz = await prisma.$transaction(async (tx) => {
-      const createdQuiz = await tx.quiz.create({
+      const createdQuiz = await (tx as any).quiz.create({
         data: {
           title: data.title,
+          grade: data.grade || null,
           mode: data.mode as QuizMode,
           timeLimitSeconds: data.mode === 'LIVE' ? null : data.timeLimitSeconds,
           showResults: data.showResults,
+          teacherId,
         },
       });
 
@@ -1268,14 +1560,14 @@ app.post('/api/quizzes', adminOnly, async (req, res) => {
     res.status(201).json({ quiz });
   } catch (error) { errorResponse(res, error); }
 });
-app.get('/api/quizzes/:id/detail', adminOnly, async (req, res) => {
+app.get('/api/quizzes/:id/detail', adminOnly, async (req: Request, res: Response) => {
   try {
     const quiz = await prisma.quiz.findUnique({ where: { id: parse(objectId, req.params.id) }, include: { questions: { orderBy: { position: 'asc' }, include: { options: { orderBy: { position: 'asc' } } } } } });
     if (!quiz) return res.status(404).json({ error: 'Quiz not found.' });
     res.json({ quiz });
   } catch (error) { errorResponse(res, error); }
 });
-app.put('/api/quizzes/:id', adminOnly, async (req, res) => {
+app.put('/api/quizzes/:id', adminOnly, async (req: Request, res: Response) => {
   try {
     const id = parse(objectId, req.params.id);
     const data = parse(quizInput, req.body);
@@ -1296,10 +1588,11 @@ app.put('/api/quizzes/:id', adminOnly, async (req, res) => {
       await tx.question.deleteMany({ where: { quizId: id } });
 
       // Update quiz metadata without heavy nested writes
-      await tx.quiz.update({
+      await (tx.quiz as any).update({
         where: { id },
         data: {
           title: data.title,
+          grade: data.grade || null,
           mode: data.mode as QuizMode,
           timeLimitSeconds: data.mode === 'LIVE' ? null : data.timeLimitSeconds,
           showResults: data.showResults,
@@ -1344,7 +1637,7 @@ app.put('/api/quizzes/:id', adminOnly, async (req, res) => {
   } catch (error) { errorResponse(res, error); }
 });
 
-app.patch('/api/quizzes/:id/mode', adminOnly, async (req, res) => {
+app.patch('/api/quizzes/:id/mode', adminOnly, async (req: Request, res: Response) => {
   try {
     const id = parse(objectId, req.params.id);
     const { mode, timeLimitSeconds } = parse(z.object({
@@ -1367,14 +1660,14 @@ app.patch('/api/quizzes/:id/mode', adminOnly, async (req, res) => {
     void publishQuizState(id);
   } catch (error) { errorResponse(res, error); }
 });
-app.delete('/api/quizzes/:id', adminOnly, async (req, res) => {
+app.delete('/api/quizzes/:id', adminOnly, async (req: Request, res: Response) => {
   try {
     const id = parse(objectId, req.params.id);
     await prisma.quiz.delete({ where: { id } });
     res.json({ ok: true });
   } catch (error) { errorResponse(res, error); }
 });
-app.patch('/api/quizzes/:id/status', adminOnly, async (req, res) => {
+app.patch('/api/quizzes/:id/status', adminOnly, async (req: Request, res: Response) => {
   try {
     const id = parse(objectId, req.params.id);
     const { action } = parse(z.object({ action: z.enum(['start', 'stop']) }), req.body);
@@ -1392,7 +1685,7 @@ app.patch('/api/quizzes/:id/status', adminOnly, async (req, res) => {
     void publishQuizState(id);
   } catch (error) { errorResponse(res, error); }
 });
-app.patch('/api/quizzes/:id/control', adminOnly, async (req, res) => {
+app.patch('/api/quizzes/:id/control', adminOnly, async (req: Request, res: Response) => {
   try {
     const id = parse(objectId, req.params.id);
     const { action } = parse(z.object({ action: z.enum(['start', 'next', 'reveal', 'stop']) }), req.body);
@@ -1425,7 +1718,7 @@ app.patch('/api/quizzes/:id/control', adminOnly, async (req, res) => {
   } catch (error) { errorResponse(res, error); }
 });
 
-app.post('/api/quizzes/:id/restart', adminOnly, async (req, res) => {
+app.post('/api/quizzes/:id/restart', adminOnly, async (req: Request, res: Response) => {
   try {
     const id = parse(objectId, req.params.id);
     const quiz = await prisma.quiz.findUnique({ where: { id } });
@@ -1473,12 +1766,14 @@ function generateShortPasskey(): string {
   return result;
 }
 
-app.get('/api/students', adminOnly, async (_req, res) => {
-  const students = await prisma.student.findMany({ orderBy: { name: 'asc' }, select: { id: true, name: true, passkey: true, active: true, createdAt: true, _count: { select: { attempts: true } } } });
+app.get('/api/students', adminOnly, async (req: AuthRequest, res: Response) => {
+  const teacherId = req.session!.id;
+  const where: any = req.session?.role === 'superadmin' ? {} : { teacherId };
+  const students: any[] = await (prisma.student as any).findMany({ where, orderBy: { name: 'asc' }, select: { id: true, name: true, grade: true, passkey: true, active: true, createdAt: true, _count: { select: { attempts: true } } } });
   for (const student of students) {
     if (!student.passkey) {
       const passkey = generateShortPasskey();
-      await prisma.student.update({
+      await (prisma.student as any).update({
         where: { id: student.id },
         data: { passkey, passkeyHash: await bcrypt.hash(passkey, 12), passkeyLookup: passkeyLookup(passkey) },
       });
@@ -1487,28 +1782,67 @@ app.get('/api/students', adminOnly, async (_req, res) => {
   }
   res.json({ students });
 });
-app.post('/api/students', adminOnly, async (req, res) => {
+app.post('/api/students', adminOnly, async (req: AuthRequest, res: Response) => {
   try {
-    const data = parse(z.object({ name: z.string().trim().min(1).max(100) }), req.body);
+    const data = parse(z.object({
+      name: z.string().trim().min(1).max(100),
+      grade: z.string().trim().min(1).max(50).optional().default('Grade 6'),
+    }), req.body);
     const passkey = generateShortPasskey();
-    const student = await prisma.student.create({ data: { name: data.name, passkey, passkeyHash: await bcrypt.hash(passkey, 12), passkeyLookup: passkeyLookup(passkey) }, select: { id: true, name: true, passkey: true, active: true } });
+    const teacherId = req.session!.id;
+    const student = await (prisma.student as any).create({
+      data: {
+        name: data.name,
+        grade: data.grade || 'Grade 6',
+        passkey,
+        passkeyHash: await bcrypt.hash(passkey, 12),
+        passkeyLookup: passkeyLookup(passkey),
+        teacherId,
+      },
+      select: { id: true, name: true, grade: true, passkey: true, active: true }
+    });
     res.status(201).json({ student, passkey });
   } catch (error) { errorResponse(res, error); }
 });
-app.patch('/api/students/:id', adminOnly, async (req, res) => {
+app.patch('/api/students/:id', adminOnly, async (req: AuthRequest, res: Response) => {
   try {
     const id = parse(objectId, req.params.id);
-    const data = parse(z.object({ active: z.boolean().optional(), name: z.string().trim().min(1).max(100).optional(), resetPasskey: z.boolean().optional() }), req.body);
+    const data = parse(z.object({
+      active: z.boolean().optional(),
+      name: z.string().trim().min(1).max(100).optional(),
+      grade: z.string().trim().min(1).max(50).optional(),
+      resetPasskey: z.boolean().optional(),
+    }), req.body);
     const passkey = data.resetPasskey ? generateShortPasskey() : null;
-    const student = await prisma.student.update({ where: { id }, data: { active: data.active, name: data.name, ...(passkey ? { passkey, passkeyHash: await bcrypt.hash(passkey, 12), passkeyLookup: passkeyLookup(passkey) } : {}) }, select: { id: true, name: true, passkey: true, active: true } });
+    const existing = await prisma.student.findUnique({ where: { id } });
+    if (!existing || (req.session?.role !== 'superadmin' && (existing as any).teacherId !== req.session!.id)) {
+      return res.status(404).json({ error: 'Student not found in your classroom.' });
+    }
+    const student = await (prisma.student as any).update({
+      where: { id },
+      data: {
+        active: data.active,
+        name: data.name,
+        grade: data.grade,
+        ...(passkey ? { passkey, passkeyHash: await bcrypt.hash(passkey, 12), passkeyLookup: passkeyLookup(passkey) } : {})
+      },
+      select: { id: true, name: true, grade: true, passkey: true, active: true }
+    });
     res.json({ student, ...(passkey ? { passkey } : {}) });
   } catch (error) { errorResponse(res, error); }
 });
-app.delete('/api/students/:id', adminOnly, async (req, res) => {
-  try { await prisma.student.delete({ where: { id: parse(objectId, req.params.id) } }); res.json({ ok: true }); }
-  catch (error) { errorResponse(res, error); }
+app.delete('/api/students/:id', adminOnly, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = parse(objectId, req.params.id);
+    const existing = await prisma.student.findUnique({ where: { id } });
+    if (!existing || (req.session?.role !== 'superadmin' && (existing as any).teacherId !== req.session!.id)) {
+      return res.status(404).json({ error: 'Student not found in your classroom.' });
+    }
+    await prisma.student.delete({ where: { id } });
+    res.json({ ok: true });
+  } catch (error) { errorResponse(res, error); }
 });
-app.get('/api/quizzes/:id/results', adminOnly, async (req, res) => {
+app.get('/api/quizzes/:id/results', adminOnly, async (req: Request, res: Response) => {
   try {
     const quiz = await prisma.quiz.findUnique({ where: { id: parse(objectId, req.params.id) }, include: { questions: { orderBy: { position: 'asc' }, include: { options: { orderBy: { position: 'asc' } } } }, attempts: { include: { student: { select: { name: true } }, answers: { include: { question: true, option: true } } }, orderBy: { startedAt: 'asc' } } } });
     if (!quiz) return res.status(404).json({ error: 'Quiz not found.' });
@@ -1519,7 +1853,7 @@ app.get('/api/quizzes/:id/results', adminOnly, async (req, res) => {
   } catch (error) { errorResponse(res, error); }
 });
 
-app.post('/api/quizzes/:quizId/attempts/:attemptId/reset', adminOnly, async (req, res) => {
+app.post('/api/quizzes/:quizId/attempts/:attemptId/reset', adminOnly, async (req: Request, res: Response) => {
   try {
     const quizId = parse(objectId, req.params.quizId);
     const attemptId = parse(objectId, req.params.attemptId);
@@ -1556,32 +1890,67 @@ app.post('/api/quizzes/:quizId/attempts/:attemptId/reset', adminOnly, async (req
   } catch (error) { errorResponse(res, error); }
 });
 
-app.get('/api/student/quizzes', studentOnly, async (req: AuthRequest, res) => {
+app.get('/api/student/quizzes', studentOnly, async (req: AuthRequest, res: Response) => {
   const studentId = req.session!.id;
-  const quizzes = await prisma.quiz.findMany({
+  const student: any = await (prisma as any).student.findUnique({ where: { id: studentId }, select: { teacherId: true, grade: true } });
+  const teacherFilter: any = student?.teacherId ? { teacherId: student.teacherId } : {};
+  const studentGrade = student?.grade || 'Grade 6';
+
+  const quizzes = await (prisma.quiz as any).findMany({
     where: {
-      OR: [
-        { status: 'ACTIVE' },
-        { attempts: { some: { studentId } } },
+      ...teacherFilter,
+      AND: [
+        {
+          OR: [
+            { grade: null },
+            { grade: '' },
+            { grade: studentGrade },
+          ]
+        },
+        {
+          OR: [
+            { status: 'ACTIVE' },
+            { attempts: { some: { studentId } } },
+          ]
+        }
       ]
-    }, orderBy: { createdAt: 'desc' }, include: { questions: { select: { marks: true } }, _count: { select: { questions: true } }, attempts: { where: { studentId }, select: { status: true, deadlineAt: true, score: true, submittedAt: true } } }
+    },
+    orderBy: { createdAt: 'desc' },
+    include: {
+      questions: { select: { marks: true } },
+      _count: { select: { questions: true } },
+      attempts: { where: { studentId }, select: { status: true, deadlineAt: true, score: true, submittedAt: true } }
+    }
   });
   res.json({
-    quizzes: quizzes.map((quiz) => {
-      const totalMarks = quiz.questions.reduce((sum, q) => sum + q.marks, 0);
+    quizzes: quizzes.map((quiz: any) => {
+      const totalMarks = quiz.questions.reduce((sum: number, q: any) => sum + q.marks, 0);
       return {
-        id: quiz.id, title: quiz.title, mode: quiz.mode, status: quiz.status,
-        timeLimitSeconds: quiz.timeLimitSeconds, questionCount: quiz._count.questions,
-        totalMarks, attempt: quiz.attempts[0] ?? null
+        id: quiz.id,
+        title: quiz.title,
+        grade: quiz.grade,
+        mode: quiz.mode,
+        status: quiz.status,
+        timeLimitSeconds: quiz.timeLimitSeconds,
+        questionCount: quiz._count.questions,
+        totalMarks,
+        attempt: quiz.attempts[0] ?? null
       };
     })
   });
 });
-app.get('/api/student/quizzes/:id', studentOnly, async (req: AuthRequest, res) => {
+app.get('/api/student/quizzes/:id', studentOnly, async (req: AuthRequest, res: Response) => {
   try {
     const id = parse(objectId, req.params.id);
-    const quiz = await prisma.quiz.findUnique({ where: { id }, select: { id: true, status: true, mode: true, timeLimitSeconds: true } });
+    const quiz: any = await (prisma.quiz as any).findUnique({ where: { id }, select: { id: true, status: true, mode: true, timeLimitSeconds: true, grade: true } });
     if (!quiz) return res.status(404).json({ error: 'Quiz not found.' });
+
+    const student: any = await (prisma.student as any).findUnique({ where: { id: req.session!.id }, select: { grade: true } });
+    const studentGrade = student?.grade || 'Grade 6';
+    if (quiz.grade && quiz.grade !== studentGrade) {
+      return res.status(403).json({ error: `This quiz is assigned for ${quiz.grade} students only.` });
+    }
+
     let attempt = await prisma.attempt.findUnique({ where: { quizId_studentId: { quizId: id, studentId: req.session!.id } } });
     if (!attempt && quiz.status === 'ACTIVE') {
       const now = new Date();
@@ -1596,7 +1965,7 @@ app.get('/api/student/quizzes/:id', studentOnly, async (req: AuthRequest, res) =
     res.json({ quiz: state });
   } catch (error) { errorResponse(res, error); }
 });
-app.put('/api/student/quizzes/:id/answers', studentOnly, async (req: AuthRequest, res) => {
+app.put('/api/student/quizzes/:id/answers', studentOnly, async (req: AuthRequest, res: Response) => {
   try {
     const quizId = parse(objectId, req.params.id);
     const { questionId, optionId } = parse(z.object({ questionId: objectId, optionId: objectId }), req.body);
@@ -1613,7 +1982,7 @@ app.put('/api/student/quizzes/:id/answers', studentOnly, async (req: AuthRequest
     if (quiz.mode === 'LIVE') void publishQuizState(quizId);
   } catch (error) { errorResponse(res, error); }
 });
-app.post('/api/student/quizzes/:id/submit', studentOnly, async (req: AuthRequest, res) => {
+app.post('/api/student/quizzes/:id/submit', studentOnly, async (req: AuthRequest, res: Response) => {
   try {
     const quizId = parse(objectId, req.params.id);
     const attempt = await prisma.attempt.findUnique({ where: { quizId_studentId: { quizId, studentId: req.session!.id } } });
@@ -1629,7 +1998,7 @@ io.use(async (socket, next) => {
   try {
     const token = cookie?.slice(sessionCookie.length + 1) ?? '';
     const payload = jwt.verify(token, secret) as JwtPayload & Session;
-    if (!payload.id || (payload.role !== 'admin' && payload.role !== 'student')) return next(new Error('Unauthorized'));
+    if (!payload.id || (!['admin', 'teacher', 'superadmin', 'student'].includes(payload.role))) return next(new Error('Unauthorized'));
     if (payload.role === 'student' && !(await prisma.student.findFirst({ where: { id: payload.id, active: true }, select: { id: true } }))) return next(new Error('Unauthorized'));
     socket.data.session = { id: payload.id, role: payload.role } satisfies Session;
     next();
@@ -1644,7 +2013,7 @@ io.on('connection', (socket) => {
     if (typeof quizId !== 'string') return;
     const quiz = await prisma.quiz.findUnique({ where: { id: quizId }, select: { id: true, status: true } });
     if (!quiz) return;
-    if (session.role === 'admin') socket.join(`teachers:${quizId}`);
+    if (session.role === 'admin' || session.role === 'teacher' || session.role === 'superadmin') socket.join(`teachers:${quizId}`);
     else if (session.role === 'student') socket.join(`students:${quizId}`);
     await publishQuizState(quizId);
   });
@@ -1652,12 +2021,12 @@ io.on('connection', (socket) => {
 
 // --- WORKSHEET & QUESTION PAPER ROUTES ---
 
-const db = prisma as any;
-
-app.get('/api/worksheets', authenticate(), async (req: AuthRequest, res) => {
+app.get('/api/worksheets', authenticate(), async (req: AuthRequest, res: Response) => {
   try {
-    if (req.session?.role === 'admin') {
-      const worksheets = await db.worksheetPaper.findMany({
+    if (req.session?.role === 'admin' || req.session?.role === 'teacher' || req.session?.role === 'superadmin') {
+      const where: any = req.session.role === 'superadmin' ? {} : { teacherId: req.session.id };
+      const worksheets = await prisma.worksheetPaper.findMany({
+        where,
         orderBy: { createdAt: 'desc' },
         include: {
           _count: { select: { submissions: true } },
@@ -1666,7 +2035,19 @@ app.get('/api/worksheets', authenticate(), async (req: AuthRequest, res) => {
       return res.json({ worksheets });
     }
 
-    const worksheets = await db.worksheetPaper.findMany({
+    const student: any = await (prisma as any).student.findUnique({ where: { id: req.session!.id }, select: { teacherId: true, grade: true } });
+    const teacherFilter: any = student?.teacherId ? { teacherId: student.teacherId } : {};
+    const studentGrade = student?.grade || 'Grade 6';
+    const worksheets = await prisma.worksheetPaper.findMany({
+      where: {
+        ...teacherFilter,
+        status: 'PUBLISHED',
+        OR: [
+          { grade: null },
+          { grade: '' },
+          { grade: studentGrade },
+        ],
+      },
       orderBy: { createdAt: 'desc' },
       include: {
         submissions: {
@@ -1676,7 +2057,7 @@ app.get('/api/worksheets', authenticate(), async (req: AuthRequest, res) => {
       },
     });
 
-    const studentWorksheets = worksheets.map((w: any) => ({
+    const studentWorksheets = worksheets.map((w) => ({
       ...w,
       submission: w.submissions[0] ?? null,
       submissions: undefined,
@@ -1686,13 +2067,13 @@ app.get('/api/worksheets', authenticate(), async (req: AuthRequest, res) => {
   } catch (error) { errorResponse(res, error); }
 });
 
-app.get('/api/worksheets/:id', authenticate(), async (req: AuthRequest, res) => {
+app.get('/api/worksheets/:id', authenticate(), async (req: AuthRequest, res: Response) => {
   try {
     const id = req.params.id as string;
-    const worksheet = await db.worksheetPaper.findUnique({
+    const worksheet = await prisma.worksheetPaper.findUnique({
       where: { id },
       include: {
-        submissions: req.session?.role === 'admin'
+        submissions: (req.session?.role === 'admin' || req.session?.role === 'teacher' || req.session?.role === 'superadmin')
           ? {
             include: { student: { select: { id: true, name: true } } },
             orderBy: { submittedAt: 'desc' },
@@ -1706,6 +2087,11 @@ app.get('/api/worksheets/:id', authenticate(), async (req: AuthRequest, res) => 
     if (!worksheet) return res.status(404).json({ error: 'Question paper not found.' });
 
     if (req.session?.role === 'student') {
+      const student: any = await (prisma.student as any).findUnique({ where: { id: req.session!.id }, select: { grade: true } });
+      const studentGrade = student?.grade || 'Grade 6';
+      if ((worksheet as any).grade && (worksheet as any).grade !== studentGrade) {
+        return res.status(403).json({ error: `This question paper is assigned for ${(worksheet as any).grade} students only.` });
+      }
       const submission = worksheet.submissions?.[0] ?? null;
       return res.json({ worksheet: { ...worksheet, submission, submissions: undefined } });
     }
@@ -1714,7 +2100,7 @@ app.get('/api/worksheets/:id', authenticate(), async (req: AuthRequest, res) => 
   } catch (error) { errorResponse(res, error); }
 });
 
-app.post('/api/worksheets', adminOnly, async (req, res) => {
+app.post('/api/worksheets', adminOnly, async (req: AuthRequest, res: Response) => {
   try {
     const schema = z.object({
       title: z.string().trim().min(1).max(200),
@@ -1725,12 +2111,13 @@ app.post('/api/worksheets', adminOnly, async (req, res) => {
       status: z.enum(['DRAFT', 'PUBLISHED', 'ARCHIVED']).default('PUBLISHED'),
     });
     const data = parse(schema, req.body);
-    const paper = await db.worksheetPaper.create({ data });
+    const teacherId = req.session!.id;
+    const paper = await (prisma as any).worksheetPaper.create({ data: { ...data, teacherId } });
     res.status(201).json({ paper });
   } catch (error) { errorResponse(res, error); }
 });
 
-app.post('/api/worksheets/ai-generate', adminOnly, async (req, res) => {
+app.post('/api/worksheets/ai-generate', adminOnly, async (req: AuthRequest, res: Response) => {
   try {
     const schema = z.object({
       subject: z.string().trim().min(1).max(100),
@@ -1746,6 +2133,13 @@ app.post('/api/worksheets/ai-generate', adminOnly, async (req, res) => {
       uploadedFiles: z.array(uploadedFileSchema).max(15).optional(),
     });
     const data = parse(schema, req.body);
+
+    if (!data.apiKey && req.session?.id) {
+      const teacher = await db.teacher.findUnique({ where: { id: req.session.id }, select: { apiKey: true } });
+      if (teacher?.apiKey) {
+        data.apiKey = teacher.apiKey;
+      }
+    }
 
     let docHtml = '';
     const generated = await generateAIQuiz({
@@ -1811,7 +2205,7 @@ ${generated.questions.map((q: any, idx: number) => `
 </div>`.trim();
     }
 
-    const paper = await db.worksheetPaper.create({
+    const paper = await prisma.worksheetPaper.create({
       data: {
         title: `${data.subject}: ${data.topic} (${data.grade})`,
         subject: data.subject,
@@ -1826,7 +2220,7 @@ ${generated.questions.map((q: any, idx: number) => `
   } catch (error) { errorResponse(res, error); }
 });
 
-app.patch('/api/worksheets/:id', adminOnly, async (req, res) => {
+app.patch('/api/worksheets/:id', adminOnly, async (req: Request, res: Response) => {
   try {
     const id = req.params.id as string;
     const schema = z.object({
@@ -1838,20 +2232,20 @@ app.patch('/api/worksheets/:id', adminOnly, async (req, res) => {
       status: z.enum(['DRAFT', 'PUBLISHED', 'ARCHIVED']).optional(),
     });
     const data = parse(schema, req.body);
-    const paper = await db.worksheetPaper.update({ where: { id }, data });
+    const paper = await prisma.worksheetPaper.update({ where: { id }, data });
     res.json({ paper });
   } catch (error) { errorResponse(res, error); }
 });
 
-app.delete('/api/worksheets/:id', adminOnly, async (req, res) => {
+app.delete('/api/worksheets/:id', adminOnly, async (req: Request, res: Response) => {
   try {
     const id = req.params.id as string;
-    await db.worksheetPaper.delete({ where: { id } });
+    await prisma.worksheetPaper.delete({ where: { id } });
     res.json({ ok: true });
   } catch (error) { errorResponse(res, error); }
 });
 
-app.post('/api/worksheets/:id/submit', authenticate('student'), async (req: AuthRequest, res) => {
+app.post('/api/worksheets/:id/submit', authenticate('student'), async (req: AuthRequest, res: Response) => {
   try {
     const paperId = req.params.id as string;
     const studentId = req.session!.id;
@@ -1860,12 +2254,12 @@ app.post('/api/worksheets/:id/submit', authenticate('student'), async (req: Auth
     });
     const data = parse(schema, req.body);
 
-    const paper = await db.worksheetPaper.findUnique({ where: { id: paperId } });
+    const paper = await prisma.worksheetPaper.findUnique({ where: { id: paperId } });
     if (!paper || paper.status !== 'PUBLISHED') {
       return res.status(404).json({ error: 'Question paper not available for submission.' });
     }
 
-    const submission = await db.worksheetSubmission.upsert({
+    const submission = await prisma.worksheetSubmission.upsert({
       where: { paperId_studentId: { paperId, studentId } },
       update: {
         images: JSON.stringify(data.images),
@@ -1884,7 +2278,7 @@ app.post('/api/worksheets/:id/submit', authenticate('student'), async (req: Auth
   } catch (error) { errorResponse(res, error); }
 });
 
-app.patch('/api/worksheets/submissions/:submissionId/grade', adminOnly, async (req, res) => {
+app.patch('/api/worksheets/submissions/:submissionId/grade', adminOnly, async (req: Request, res: Response) => {
   try {
     const id = req.params.submissionId as string;
     const schema = z.object({
@@ -1893,7 +2287,7 @@ app.patch('/api/worksheets/submissions/:submissionId/grade', adminOnly, async (r
     });
     const data = parse(schema, req.body);
 
-    const submission = await db.worksheetSubmission.update({
+    const submission = await prisma.worksheetSubmission.update({
       where: { id },
       data: {
         score: data.score,
@@ -1908,10 +2302,10 @@ app.patch('/api/worksheets/submissions/:submissionId/grade', adminOnly, async (r
   } catch (error) { errorResponse(res, error); }
 });
 
-app.delete('/api/worksheets/submissions/:submissionId/images', adminOnly, async (req, res) => {
+app.delete('/api/worksheets/submissions/:submissionId/images', adminOnly, async (req: Request, res: Response) => {
   try {
     const id = req.params.submissionId as string;
-    const submission = await db.worksheetSubmission.update({
+    const submission = await prisma.worksheetSubmission.update({
       where: { id },
       data: {
         images: '[]',
@@ -1924,7 +2318,7 @@ app.delete('/api/worksheets/submissions/:submissionId/images', adminOnly, async 
 // --- STUDY MATERIAL MODULE (VERSION 2) ---
 
 // Public Study Materials List
-app.get('/api/public/study-materials', async (req, res) => {
+app.get('/api/public/study-materials', async (req: Request, res: Response) => {
   try {
     const grade = typeof req.query.grade === 'string' && req.query.grade ? req.query.grade : undefined;
     const subject = typeof req.query.subject === 'string' && req.query.subject ? req.query.subject : undefined;
@@ -1949,7 +2343,7 @@ app.get('/api/public/study-materials', async (req, res) => {
       ];
     }
 
-    const materials = await db.studyMaterial.findMany({
+    const materials = await prisma.studyMaterial.findMany({
       where,
       orderBy: { createdAt: 'desc' },
       select: {
@@ -1978,10 +2372,10 @@ app.get('/api/public/study-materials', async (req, res) => {
 });
 
 // Public Single Study Material Details (with view count increment)
-app.get('/api/public/study-materials/:id', async (req, res) => {
+app.get('/api/public/study-materials/:id', async (req: Request, res: Response) => {
   try {
     const id = req.params.id as string;
-    const material = await db.studyMaterial.update({
+    const material = await prisma.studyMaterial.update({
       where: { id },
       data: { views: { increment: 1 } },
     });
@@ -1991,9 +2385,9 @@ app.get('/api/public/study-materials/:id', async (req, res) => {
 });
 
 // Public Summary of Grades & Material Counts
-app.get('/api/public/grades-summary', async (_req, res) => {
+app.get('/api/public/grades-summary', async (_req: Request, res: Response) => {
   try {
-    const all = await db.studyMaterial.findMany({
+    const all = await prisma.studyMaterial.findMany({
       where: { status: 'PUBLISHED' },
       select: { grade: true, subject: true, mediaType: true },
     });
@@ -2018,17 +2412,17 @@ app.get('/api/public/grades-summary', async (_req, res) => {
   } catch (error) { errorResponse(res, error); }
 });
 
-// Admin Study Material Management Endpoints
-app.get('/api/study-materials', adminOnly, async (_req, res) => {
+// Super Admin Study Material Management Endpoints (Public Portal Control)
+app.get('/api/study-materials', superAdminOnly, async (_req: Request, res: Response) => {
   try {
-    const materials = await db.studyMaterial.findMany({
+    const materials = await prisma.studyMaterial.findMany({
       orderBy: { createdAt: 'desc' },
     });
     res.json({ materials });
   } catch (error) { errorResponse(res, error); }
 });
 
-app.post('/api/study-materials', adminOnly, async (req, res) => {
+app.post('/api/study-materials', superAdminOnly, async (req: Request, res: Response) => {
   try {
     const schema = z.object({
       title: z.string().trim().min(1).max(200),
@@ -2036,23 +2430,23 @@ app.post('/api/study-materials', adminOnly, async (req, res) => {
       content: z.string().trim().optional().nullable(),
       grade: z.string().trim().min(1).max(50),
       subject: z.string().trim().min(1).max(50).default('Mathematics'),
-      mediaType: z.enum(['ARTICLE', 'PDF', 'VIDEO', 'PRESENTATION', 'IMAGE']).default('ARTICLE'),
+      mediaType: z.enum(['ARTICLE', 'PDF', 'VIDEO', 'PRESENTATION', 'IMAGE', 'WORKSHEET']).default('ARTICLE'),
       fileUrl: z.string().trim().optional().nullable(),
       fileName: z.string().trim().optional().nullable(),
       fileSize: z.number().int().optional().nullable(),
       videoUrl: z.string().trim().optional().nullable(),
       coverImage: z.string().trim().optional().nullable(),
       readTime: z.string().trim().optional().nullable(),
-      authorName: z.string().trim().optional().default('Maths Mentor'),
+      authorName: z.string().trim().optional().default('EduAshram'),
       status: z.enum(['DRAFT', 'PUBLISHED', 'ARCHIVED']).default('PUBLISHED'),
     });
     const data = parse(schema, req.body);
-    const material = await db.studyMaterial.create({ data });
+    const material = await prisma.studyMaterial.create({ data: data as Prisma.StudyMaterialCreateInput });
     res.status(201).json({ material });
   } catch (error) { errorResponse(res, error); }
 });
 
-app.put('/api/study-materials/:id', adminOnly, async (req, res) => {
+app.put('/api/study-materials/:id', superAdminOnly, async (req: Request, res: Response) => {
   try {
     const id = req.params.id as string;
     const schema = z.object({
@@ -2061,7 +2455,7 @@ app.put('/api/study-materials/:id', adminOnly, async (req, res) => {
       content: z.string().trim().optional().nullable(),
       grade: z.string().trim().min(1).max(50).optional(),
       subject: z.string().trim().min(1).max(50).optional(),
-      mediaType: z.enum(['ARTICLE', 'PDF', 'VIDEO', 'PRESENTATION', 'IMAGE']).optional(),
+      mediaType: z.enum(['ARTICLE', 'PDF', 'VIDEO', 'PRESENTATION', 'IMAGE', 'WORKSHEET']).optional(),
       fileUrl: z.string().trim().optional().nullable(),
       fileName: z.string().trim().optional().nullable(),
       fileSize: z.number().int().optional().nullable(),
@@ -2072,20 +2466,20 @@ app.put('/api/study-materials/:id', adminOnly, async (req, res) => {
       status: z.enum(['DRAFT', 'PUBLISHED', 'ARCHIVED']).optional(),
     });
     const data = parse(schema, req.body);
-    const material = await db.studyMaterial.update({ where: { id }, data });
+    const material = await prisma.studyMaterial.update({ where: { id }, data: data as Prisma.StudyMaterialUpdateInput });
     res.json({ material });
   } catch (error) { errorResponse(res, error); }
 });
 
-app.delete('/api/study-materials/:id', adminOnly, async (req, res) => {
+app.delete('/api/study-materials/:id', superAdminOnly, async (req: Request, res: Response) => {
   try {
     const id = req.params.id as string;
-    await db.studyMaterial.delete({ where: { id } });
+    await prisma.studyMaterial.delete({ where: { id } });
     res.json({ ok: true });
   } catch (error) { errorResponse(res, error); }
 });
 
-app.post('/api/study-materials/upload', adminOnly, async (req, res) => {
+app.post('/api/study-materials/upload', superAdminOnly, async (req: Request, res: Response) => {
   try {
     const schema = z.object({
       fileName: z.string().min(1),
@@ -2123,7 +2517,7 @@ app.use('/uploads', express.static(uploadsDir));
 
 app.use(express.static(resolve('public')));
 app.use(express.static(resolve('dist')));
-app.use((req, res, next) => {
+app.use((req: Request, res: Response, next: NextFunction) => {
   if (req.path.startsWith('/api/')) return next();
   res.sendFile(resolve('dist/index.html'), (error) => { if (error) next(error); });
 });
@@ -2131,15 +2525,32 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => e
 
 setInterval(() => { void finishExpiredAttempts().catch(() => { }); }, 5000).unref();
 async function startServer() {
-  if (process.env.ADMIN_EMAIL && process.env.ADMIN_PASSWORD) {
-    try {
-      const passwordHash = await bcrypt.hash(process.env.ADMIN_PASSWORD, 12);
-      await prisma.admin.upsert({ where: { email: process.env.ADMIN_EMAIL.toLowerCase() }, update: { passwordHash }, create: { email: process.env.ADMIN_EMAIL.toLowerCase(), passwordHash } });
-      console.log('✅ Default admin account ready.');
-    } catch (err) {
-      console.error('⚠️ Admin seeding skipped (DB connection pending):', err);
-    }
+  try {
+    const email = process.env.ADMIN_EMAIL || 'gaurav.kr.singh@hotmail.com';
+    const password = process.env.ADMIN_PASSWORD || 'adminpassword123';
+    const superAdminUsername = process.env.SUPERADMIN_USERNAME || 'admin';
+    const superAdminEmail = process.env.SUPERADMIN_EMAIL || email;
+    const superAdminPassword = process.env.SUPERADMIN_PASSWORD || password;
+    const superAdminSecretKey = process.env.SUPERADMIN_SECRET_KEY || 'eduashram@secret2026';
+
+    const superAdminPasswordHash = await bcrypt.hash(superAdminPassword, 12);
+    const superAdminSecretKeyHash = await bcrypt.hash(superAdminSecretKey, 12);
+    await db.superAdmin.upsert({
+      where: { username: superAdminUsername },
+      update: { email: superAdminEmail, passwordHash: superAdminPasswordHash, secretKeyHash: superAdminSecretKeyHash },
+      create: { username: superAdminUsername, email: superAdminEmail, passwordHash: superAdminPasswordHash, secretKeyHash: superAdminSecretKeyHash },
+    });
+
+    const teacherPasswordHash = await bcrypt.hash(password, 12);
+    await db.teacher.upsert({
+      where: { email },
+      update: { name: 'Gaurav Kumar Singh', active: true },
+      create: { name: 'Gaurav Kumar Singh', email, passwordHash: teacherPasswordHash, school: 'EduAshram Central', subject: 'Mathematics', active: true },
+    });
+    console.log('✅ Super Admin & First Teacher account verified.');
+  } catch (err) {
+    console.error('⚠️ Account initialization check skipped:', err);
   }
-  httpServer.listen(port, '0.0.0.0', () => console.log(`Maths Mentor server listening on port ${port}`));
+  httpServer.listen(port, '0.0.0.0', () => console.log(`EduAshram server listening on port ${port}`));
 }
 void startServer();

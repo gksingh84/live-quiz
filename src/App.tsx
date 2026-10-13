@@ -3,21 +3,22 @@ import { createPortal } from 'react-dom';
 import { io, type Socket } from 'socket.io-client';
 import { AppWindow, ArrowLeft, ArrowRight, BarChart3, BookOpen, BookOpenCheck, Calculator, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronUp, CircleHelp, Clock3, Copy, Download, ExternalLink, Eye, FileText, KeyRound, ListChecks, Lock, LogOut, Maximize2, Minimize2, Paperclip, Pencil, PenTool, Plus, Printer, Radio, RefreshCw, RotateCcw, Save, Send, ShieldCheck, Sparkles, Trash2, UploadCloud, UserCheck, Users, UserX, X } from 'lucide-react';
 import { PublicPortal } from './components/PublicPortal';
-import { AuthModal } from './components/AuthModal';
-import { TeacherStudyMaterials } from './components/TeacherStudyMaterials';
+import { AuthModal, type AuthMode } from './components/AuthModal';
+import { SuperAdminConsole } from './components/SuperAdminConsole';
 
 type Mode = 'LIVE' | 'SELF_PACED';
 type QuestionType = 'MCQ' | 'FILL_BLANK' | 'TRUE_FALSE' | 'SOLVE';
 type Status = 'DRAFT' | 'ACTIVE' | 'CLOSED';
 type Option = { id?: string; text: string; isCorrect?: boolean; correct?: boolean };
 type Question = { id?: string; prompt: string; marks: number; imageUrl?: string | null; type?: QuestionType; options: Option[] };
-type Quiz = { id: string; title: string; mode: Mode; status: Status; timeLimitSeconds: number | null; showResults: boolean; currentQuestionIndex: number; currentAnswerRevealed: boolean; questions?: Question[]; _count?: { questions: number; attempts: number } };
-type Student = { id: string; name: string; passkey?: string | null; active: boolean; _count: { attempts: number } };
-type User = { id?: string; role: 'admin' | 'student'; name?: string; email?: string };
-type QuizDraft = { title: string; mode: Mode; hasTimer: boolean; minutes: number; showResults: boolean; questions: Question[] };
-const newDraft = (): QuizDraft => ({ title: '', mode: 'LIVE', hasTimer: false, minutes: 20, showResults: true, questions: [emptyQuestion()] });
-type StudentQuiz = { id: string; title: string; mode: Mode; status: Status; timeLimitSeconds: number | null; questionCount: number; totalMarks?: number; attempt: { status: string; deadlineAt: string | null; score: number | null; submittedAt?: string | null } | null };
-type ActiveQuiz = { id: string; title: string; mode: Mode; status: Status; timeLimitSeconds: number | null; showResults: boolean; currentQuestionIndex: number; currentAnswerRevealed: boolean; questionCount?: number; totalMarks?: number; questions: Question[]; attempt: { status: string; deadlineAt: string | null; score: number | null; answers: { questionId: string; optionId: string }[] } | null };
+type Quiz = { id: string; title: string; grade?: string | null; mode: Mode; status: Status; timeLimitSeconds: number | null; showResults: boolean; currentQuestionIndex: number; currentAnswerRevealed: boolean; questions?: Question[]; _count?: { questions: number; attempts: number } };
+type Student = { id: string; name: string; grade?: string | null; passkey?: string | null; active: boolean; _count: { attempts: number } };
+type User = { id?: string; role: 'admin' | 'teacher' | 'superadmin' | 'student'; name?: string; email?: string; username?: string; hasApiKey?: boolean; grade?: string | null };
+type QuizDraft = { title: string; grade?: string; mode: Mode; hasTimer: boolean; minutes: number; showResults: boolean; questions: Question[] };
+const ALL_STUDENT_GRADES = ['Grade 1', 'Grade 2', 'Grade 3', 'Grade 4', 'Grade 5', 'Grade 6', 'Grade 7', 'Grade 8', 'Grade 9', 'Grade 10', 'Grade 11', 'Grade 12'];
+const newDraft = (): QuizDraft => ({ title: '', grade: 'All Grades', mode: 'LIVE', hasTimer: false, minutes: 20, showResults: true, questions: [emptyQuestion()] });
+type StudentQuiz = { id: string; title: string; grade?: string | null; mode: Mode; status: Status; timeLimitSeconds: number | null; questionCount: number; totalMarks?: number; attempt: { status: string; deadlineAt: string | null; score: number | null; submittedAt?: string | null } | null };
+type ActiveQuiz = { id: string; title: string; grade?: string | null; mode: Mode; status: Status; timeLimitSeconds: number | null; showResults: boolean; currentQuestionIndex: number; currentAnswerRevealed: boolean; questionCount?: number; totalMarks?: number; questions: Question[]; attempt: { status: string; deadlineAt: string | null; score: number | null; answers: { questionId: string; optionId: string }[] } | null };
 type Result = { id: string; studentId?: string; name: string; status: string; submittedAt: string | null; score: number | null; totalMarks: number; answers: { question: string; response: string; correct: boolean; marks: number }[] };
 type LiveStats = { answered: number; participants: number; distribution: { optionId: string; count: number }[]; responses: { name: string; optionId: string; text: string }[] };
 
@@ -123,8 +124,20 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 function App() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
-  const [loginModal, setLoginModal] = useState<'admin' | 'student' | null>(null);
-  const [view, setView] = useState<'portal' | 'dashboard'>(() => {
+  const [loginModal, setLoginModal] = useState<AuthMode | null>(() => {
+    if (typeof window !== 'undefined') {
+      const p = window.location.pathname.toLowerCase();
+      const s = window.location.search.toLowerCase();
+      if (p === '/student' || s.includes('student')) return 'student';
+      if (p === '/teacher/signup' || p === '/signup' || s.includes('teacher_signup')) return 'teacher_signup';
+      if (p === '/teacher' || p === '/teacher/login' || s.includes('teacher_login') || s.includes('teacher')) return 'teacher_login';
+    }
+    return null;
+  });
+  const [view, setView] = useState<'portal' | 'dashboard' | 'superadmin'>(() => {
+    if (typeof window !== 'undefined' && (window.location.search.includes('admin') || window.location.search.includes('superadmin'))) {
+      return 'superadmin';
+    }
     const saved = localStorage.getItem('maths_mentor_view');
     return saved === 'portal' ? 'portal' : 'dashboard';
   });
@@ -157,29 +170,59 @@ function App() {
       .then((result) => {
         setUser(result.user);
         if (result.user) {
-          setView('dashboard');
-          localStorage.setItem('maths_mentor_view', 'dashboard');
+          if (result.user.role === 'superadmin') {
+            setView('superadmin');
+          } else {
+            setView('dashboard');
+            localStorage.setItem('maths_mentor_view', 'dashboard');
+          }
         } else {
-          setView('portal');
-          localStorage.removeItem('maths_mentor_view');
+          if (!window.location.search.includes('admin')) {
+            setView('portal');
+            localStorage.removeItem('maths_mentor_view');
+          }
         }
       })
       .catch(() => {
         setUser(null);
-        setView('portal');
-        localStorage.removeItem('maths_mentor_view');
+        if (!window.location.search.includes('admin')) {
+          setView('portal');
+          localStorage.removeItem('maths_mentor_view');
+        }
       })
       .finally(() => setLoading(false));
   }, []);
 
-  if (loading) return <div className="loading-screen"><span className="brand-mark"><img src="/logo.png" alt="Maths Mentor" className="brand-logo" /></span><span>Getting Maths Mentor ready</span></div>;
+  if (loading) return <div className="loading-screen"><span className="brand-mark"><img src="/logo.png" alt="EduAshram" className="brand-logo" /></span><span>Getting EduAshram ready</span></div>;
 
+  // View 1: Super Admin Console
+  if (view === 'superadmin' || user?.role === 'superadmin') {
+    return (
+      <SuperAdminConsole
+        currentUser={user}
+        onSignOut={signOut}
+        onBackToPortal={() => {
+          setView('portal');
+          localStorage.removeItem('maths_mentor_view');
+        }}
+      />
+    );
+  }
+
+  // View 2: Public Portal
   if (!user || view === 'portal') {
     return (
       <>
         <PublicPortal
           user={user}
-          onOpenLogin={(mode) => setLoginModal(mode)}
+          onOpenLogin={(mode) => {
+            const m = mode as AuthMode;
+            setLoginModal(m);
+            if (m === 'student') window.history.replaceState({}, '', '/student');
+            else if (m === 'teacher_signup') window.history.replaceState({}, '', '/teacher/signup');
+            else if (m === 'teacher_login') window.history.replaceState({}, '', '/teacher/login');
+          }}
+          onOpenSuperAdmin={() => setView('superadmin')}
           onGoToDashboard={() => {
             setView('dashboard');
             localStorage.setItem('maths_mentor_view', 'dashboard');
@@ -189,13 +232,28 @@ function App() {
         {loginModal && (
           <AuthModal
             mode={loginModal}
-            initialMode={loginModal}
-            onClose={() => setLoginModal(null)}
+            onClose={() => {
+              setLoginModal(null);
+              if (window.location.pathname !== '/') {
+                window.history.replaceState({}, '', '/');
+              }
+            }}
+            onSwitchMode={(nextMode) => {
+              setLoginModal(nextMode);
+              if (nextMode === 'teacher_signup') window.history.replaceState({}, '', '/teacher/signup');
+              else if (nextMode === 'teacher_login') window.history.replaceState({}, '', '/teacher/login');
+              else if (nextMode === 'student') window.history.replaceState({}, '', '/student');
+            }}
             onSuccess={(u) => {
               setUser(u);
               setLoginModal(null);
-              setView('dashboard');
-              localStorage.setItem('maths_mentor_view', 'dashboard');
+              window.history.replaceState({}, '', '/');
+              if (u.role === 'superadmin') {
+                setView('superadmin');
+              } else {
+                setView('dashboard');
+                localStorage.setItem('maths_mentor_view', 'dashboard');
+              }
             }}
           />
         )}
@@ -203,7 +261,8 @@ function App() {
     );
   }
 
-  return user.role === 'admin'
+  // View 3: Logged in Dashboard (Teacher or Student)
+  return (user.role === 'admin' || user.role === 'teacher')
     ? <TeacherApp user={user} onSignOut={signOut} notice={notice} setNotice={setNotice} onViewPortal={() => setView('portal')} />
     : <StudentApp user={user} onSignOut={signOut} notice={notice} setNotice={setNotice} onViewPortal={() => setView('portal')} />;
 }
@@ -221,7 +280,7 @@ export function Login({ mode, onSubmit, error }: { mode: 'admin' | 'student'; on
   }
   return <main className="login-layout">
     <section className="login-side">
-      <div className="login-brand"><span className="brand-mark"><img src="/logo.png" alt="Maths Mentor" className="brand-logo" /></span><span>Maths Mentor</span></div>
+      <div className="login-brand"><span className="brand-mark"><img src="/logo.png" alt="EduAshram" className="brand-logo" /></span><span>EduAshram</span></div>
       <div className="login-copy">
         <div className="eyebrow"><span className="eyebrow-line" /> LEARN · PRACTISE · EXCEL</div>
         <h1>Understand Maths.<br />Master Every <em>Concept.</em></h1>
@@ -251,11 +310,11 @@ export function Login({ mode, onSubmit, error }: { mode: 'admin' | 'student'; on
         </div>
         <div className="login-note"><Sparkles size={17} /><span>Every student can learn Maths with the right guidance.</span></div>
       </div>
-      <div className="login-footer"><span>Maths Mentor</span><span>Learn · Practise · Excel</span></div>
+      <div className="login-footer"><span>EduAshram</span><span>Learn · Practise · Excel</span></div>
     </section>
     <section className="login-main">
       <div className="login-card">
-        <span className="overline">Welcome to Maths Mentor</span><h2>{mode === 'student' ? 'Student Passkey Access' : 'Teacher Administration'}</h2><p className="muted">{mode === 'student' ? 'Enter the passkey your teacher shared with you.' : 'Sign in to prepare a quiz or bring the class together.'}</p>
+        <span className="overline">Welcome to EduAshram</span><h2>{mode === 'student' ? 'Student Passkey Access' : 'Teacher Administration'}</h2><p className="muted">{mode === 'student' ? 'Enter the passkey your teacher shared with you.' : 'Sign in to prepare a quiz or bring the class together.'}</p>
         <form onSubmit={submit} className="form-stack">
           {mode === 'student' ? <label className="field"><span>Your passkey</span><div className="input-with-icon"><KeyRound size={17} /><input autoFocus required value={passkey} onChange={(event) => setPasskey(event.target.value.toUpperCase())} placeholder="Enter your 6-character passkey" autoCapitalize="characters" autoComplete="one-time-code" maxLength={12} /></div></label> : <><label className="field"><span>Email address</span><input autoFocus required type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="teacher@school.com" autoComplete="username" /></label><label className="field"><span>Password</span><input required type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Enter your password" autoComplete="current-password" /></label></>}
           {error && <div className="inline-error" role="alert">{error}</div>}
@@ -269,13 +328,13 @@ export function Login({ mode, onSubmit, error }: { mode: 'admin' | 'student'; on
 }
 
 function TeacherApp({ user, onSignOut, notice, setNotice, onViewPortal }: { user: User; onSignOut: () => void; notice: string; setNotice: (text: string) => void; onViewPortal?: () => void }) {
-  const [tab, setTabState] = useState<'overview' | 'quizzes' | 'worksheets' | 'whiteboard' | 'students' | 'results' | 'ai_settings' | 'study_materials'>(() => {
+  const [tab, setTabState] = useState<'overview' | 'quizzes' | 'worksheets' | 'whiteboard' | 'students' | 'results' | 'ai_settings'>(() => {
     const saved = localStorage.getItem('teacher_active_tab') as any;
-    const validTabs = ['overview', 'quizzes', 'worksheets', 'whiteboard', 'students', 'results', 'ai_settings', 'study_materials'];
+    const validTabs = ['overview', 'quizzes', 'worksheets', 'whiteboard', 'students', 'results', 'ai_settings'];
     return validTabs.includes(saved) ? saved : 'overview';
   });
 
-  const setTab = (newTab: 'overview' | 'quizzes' | 'worksheets' | 'whiteboard' | 'students' | 'results' | 'ai_settings' | 'study_materials') => {
+  const setTab = (newTab: 'overview' | 'quizzes' | 'worksheets' | 'whiteboard' | 'students' | 'results' | 'ai_settings') => {
     setTabState(newTab);
     localStorage.setItem('teacher_active_tab', newTab);
   };
@@ -356,12 +415,11 @@ function TeacherApp({ user, onSignOut, notice, setNotice, onViewPortal }: { user
 
   return <div className="app-shell">
     <aside className="sidebar">
-      <div className="sidebar-brand"><span className="brand-mark"><img src="/logo.png" alt="Maths Mentor" className="brand-logo" /></span><span>Maths Mentor</span><span className="brand-dot" /></div>
+      <div className="sidebar-brand"><span className="brand-mark"><img src="/logo.png" alt="EduAshram" className="brand-logo" /></span><span>EduAshram</span><span className="brand-dot" /></div>
       <div className="sidebar-label">TEACHER SPACE</div>
       <nav className="side-nav" aria-label="Teacher navigation">
         <NavItem active={tab === 'overview'} icon={<BarChart3 size={17} />} label="Overview" onClick={() => setTab('overview')} />
         <NavItem active={tab === 'whiteboard'} icon={<PenTool size={17} />} label="Whiteboard" onClick={() => setTab('whiteboard')} />
-        <NavItem active={tab === 'study_materials'} icon={<BookOpen size={17} />} label="Study Materials" onClick={() => setTab('study_materials')} />
         <NavItem active={tab === 'quizzes'} icon={<BookOpenCheck size={17} />} label="Quizzes and Worksheets" count={quizzes.length} onClick={() => setTab('quizzes')} />
         <NavItem active={tab === 'worksheets'} icon={<FileText size={17} />} label="Question Papers" count={worksheets.length} onClick={() => setTab('worksheets')} />
         <NavItem active={tab === 'students'} icon={<Users size={17} />} label="Students" count={students.length} onClick={() => setTab('students')} />
@@ -489,7 +547,6 @@ function TeacherApp({ user, onSignOut, notice, setNotice, onViewPortal }: { user
             </section>
           );
         })()}
-        {tab === 'study_materials' && <TeacherStudyMaterials setNotice={setNotice} onViewPortal={onViewPortal} />}
         {tab === 'quizzes' && <QuizManager quizzes={quizzes} selectedQuiz={selectedQuiz} setSelectedQuiz={setSelectedQuiz} liveQuiz={liveQuiz} refresh={refresh} setNotice={setNotice} onNavigateToAISettings={() => setTab('ai_settings')} />}
         {tab === 'worksheets' && <WorksheetsPanel setNotice={setNotice} onNavigateToAISettings={() => setTab('ai_settings')} />}
         {tab === 'whiteboard' && <TeacherWhiteboard setNotice={setNotice} />}
@@ -507,14 +564,39 @@ function AISettingsPanel({ setNotice }: { setNotice: (msg: string) => void }) {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('livequiz_ai_key') || '');
   const [showKey, setShowKey] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
 
-  function handleSave(e: React.FormEvent) {
+  useEffect(() => {
+    fetch('/api/teacher/profile', { credentials: 'same-origin' })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.teacher?.apiKey && !apiKey) {
+          setApiKey(d.teacher.apiKey);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  async function handleSave(e: React.FormEvent) {
     e.preventDefault();
+    setSaving(true);
     localStorage.setItem('livequiz_ai_provider', provider);
     localStorage.setItem('livequiz_ai_key', apiKey.trim());
-    setSaved(true);
-    setNotice('✓ AI Engine Provider & API Key saved successfully.');
-    setTimeout(() => setSaved(false), 3000);
+    try {
+      await fetch('/api/teacher/api-key', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ apiKey: apiKey.trim() }),
+      });
+      setSaved(true);
+      setNotice('✓ Personal AI API Key saved to your teacher profile and browser.');
+      setTimeout(() => setSaved(false), 3500);
+    } catch {
+      setNotice('✓ Saved to browser local storage.');
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -575,8 +657,8 @@ function AISettingsPanel({ setNotice }: { setNotice: (msg: string) => void }) {
           </div>
 
           <div className="compact-modal-actions" style={{ marginTop: '20px' }}>
-            <button type="submit" className="button button-primary" style={{ padding: '0 28px', minHeight: '44px' }}>
-              <Save size={16} /> Save AI Settings
+            <button type="submit" className="button button-primary" style={{ padding: '0 28px', minHeight: '44px' }} disabled={saving}>
+              {saving ? 'Saving...' : <><Save size={16} /> Save AI Settings</>}
             </button>
           </div>
         </form>
@@ -617,7 +699,7 @@ function TeacherWhiteboard({ setNotice }: { setNotice: (msg: string) => void }) 
 
     window.open(
       '/whiteboard.html',
-      'MathsMentorWhiteboardWindow',
+      'EduAshramWhiteboardWindow',
       `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`
     );
     setNotice('Whiteboard opened in a separate window. You can snap it adjacent to another app.');
@@ -684,7 +766,7 @@ function TeacherWhiteboard({ setNotice }: { setNotice: (msg: string) => void }) 
         <div className="whiteboard-fullscreen-bar">
           <div className="whiteboard-fullscreen-brand">
             <span className="brand-dot" />
-            <strong>Maths Mentor Whiteboard</strong>
+            <strong>EduAshram Whiteboard</strong>
             <span className="badge">Fullscreen Mode (Press Esc or Exit)</span>
           </div>
           <div className="whiteboard-fullscreen-controls">
@@ -734,7 +816,7 @@ function TeacherWhiteboard({ setNotice }: { setNotice: (msg: string) => void }) 
   );
 }
 
-function tabLabel(tab: string) { return ({ overview: 'Overview', whiteboard: 'Online Whiteboard', study_materials: 'Study Materials', quizzes: 'Quizzes and Worksheets', worksheets: 'Question Papers', students: 'Students', results: 'Results', ai_settings: 'AI Settings' } as Record<string, string>)[tab] ?? tab; }
+function tabLabel(tab: string) { return ({ overview: 'Overview', whiteboard: 'Online Whiteboard', quizzes: 'Quizzes and Worksheets', worksheets: 'Question Papers', students: 'Students', results: 'Results', ai_settings: 'AI Settings' } as Record<string, string>)[tab] ?? tab; }
 function NavItem({ active, icon, label, count, onClick }: { active: boolean; icon: React.ReactNode; label: string; count?: number; onClick: () => void }) { return <button className={`nav-item ${active ? 'active' : ''}`} onClick={onClick}>{icon}<span>{label}</span>{count !== undefined && <small>{count}</small>}</button>; }
 function Metric({ label, value, icon, tint }: { label: string; value: number | string; icon: React.ReactNode; tint: string }) { return <div className="metric"><div className={`metric-icon ${tint}`}>{icon}</div><div><span>{label}</span><strong>{value}</strong></div><div className="metric-trend">↗</div></div>; }
 
@@ -1010,7 +1092,7 @@ function ContentSourceUploadSection({
   );
 }
 
-function AIQuizModal({ onClose, onGenerated, onNavigateToAISettings }: { onClose: () => void; onGenerated: (quiz: { title: string; mode: Mode; hasTimer?: boolean; minutes?: number; questions: Question[] }) => void; onNavigateToAISettings?: () => void }) {
+function AIQuizModal({ onClose, onGenerated, onNavigateToAISettings }: { onClose: () => void; onGenerated: (quiz: { title: string; mode: Mode; hasTimer?: boolean; minutes?: number; questions: Question[]; grade?: string }) => void; onNavigateToAISettings?: () => void }) {
   const [subject, setSubject] = useState('Science');
   const [customSubject, setCustomSubject] = useState('');
   const [grade, setGrade] = useState('Grade 6');
@@ -1061,7 +1143,7 @@ function AIQuizModal({ onClose, onGenerated, onNavigateToAISettings }: { onClose
           uploadedFiles: sourceFiles.length > 0 ? sourceFiles : undefined,
         }),
       });
-      onGenerated({ title: res.title, mode, hasTimer, minutes, questions: res.questions });
+      onGenerated({ title: res.title, grade, mode, hasTimer, minutes, questions: res.questions });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Unable to generate quiz.');
     } finally {
@@ -1274,6 +1356,7 @@ function QuizManager({ quizzes, selectedQuiz, setSelectedQuiz, liveQuiz, refresh
       setEditingId(full.id);
       setDraft({
         title: full.title,
+        grade: full.grade || 'All Grades',
         mode: full.mode,
         hasTimer: full.mode === 'SELF_PACED' && full.timeLimitSeconds !== null,
         minutes: Math.max(1, Math.round((full.timeLimitSeconds ?? 1200) / 60)),
@@ -1295,6 +1378,7 @@ function QuizManager({ quizzes, selectedQuiz, setSelectedQuiz, liveQuiz, refresh
     try {
       const body = {
         title: draft.title,
+        grade: draft.grade && draft.grade !== 'All Grades' ? draft.grade : null,
         mode: draft.mode,
         timeLimitSeconds: (draft.mode === 'SELF_PACED' && draft.hasTimer) ? Math.max(60, draft.minutes * 60) : null,
         showResults: draft.showResults,
@@ -1335,10 +1419,11 @@ function QuizManager({ quizzes, selectedQuiz, setSelectedQuiz, liveQuiz, refresh
     }
   }
 
-  function handleAIGenerated(result: { title: string; mode: Mode; hasTimer?: boolean; minutes?: number; questions: Question[] }) {
+  function handleAIGenerated(result: { title: string; mode: Mode; hasTimer?: boolean; minutes?: number; questions: Question[]; grade?: string }) {
     setEditingId('');
     setDraft({
       title: result.title,
+      grade: result.grade || 'Grade 6',
       mode: result.mode,
       hasTimer: result.hasTimer ?? false,
       minutes: result.minutes ?? 20,
@@ -1346,13 +1431,13 @@ function QuizManager({ quizzes, selectedQuiz, setSelectedQuiz, liveQuiz, refresh
       questions: result.questions,
     });
     setShowAIModal(false);
-    setNotice('✨ AI Quiz generated with NEP 2026 alignment! Review and save below.');
+    setNotice(`✨ AI Quiz generated for ${result.grade || 'Grade 6'} with NEP 2026 alignment! Review and save below.`);
   }
 
   if (draft) return <section className="view-enter"><div className="page-heading compact-heading"><div><button className="back-link" onClick={() => setDraft(null)}><ArrowLeft size={15} /> All quizzes</button><h1>{editingId ? 'Edit your quiz' : 'Build a quiz'}</h1><p>Keep each question clear and focused.</p></div><button className="button button-primary" onClick={(event) => void saveQuiz(event as unknown as React.FormEvent)} disabled={saving}>{saving ? 'Saving...' : <><Check size={16} /> Save quiz</>}</button></div>
     <form className="editor-layout" onSubmit={saveQuiz}>
       <div className="editor-main">
-        <div className="form-panel"><div className="panel-title"><span className="step-count">01</span><div><h2>Quiz details</h2><p>Give your quiz a name students will recognize.</p></div></div><label className="field"><span>Quiz title</span><input required maxLength={120} value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="e.g. Fractions, round one" /></label><div className="field"><span>How will students take it?</span><div className="mode-choice"><button type="button" className={draft.mode === 'LIVE' ? 'chosen' : ''} onClick={() => setDraft({ ...draft, mode: 'LIVE', hasTimer: false })}><Radio size={18} /><span><strong>Live classroom</strong></span>{draft.mode === 'LIVE' && <Check size={16} />}</button><button type="button" className={draft.mode === 'SELF_PACED' && draft.hasTimer ? 'chosen' : ''} onClick={() => setDraft({ ...draft, mode: 'SELF_PACED', hasTimer: true })}><Clock3 size={18} /><span><strong>Timed practice</strong></span>{draft.mode === 'SELF_PACED' && draft.hasTimer && <Check size={16} />}</button><button type="button" className={draft.mode === 'SELF_PACED' && !draft.hasTimer ? 'chosen' : ''} onClick={() => setDraft({ ...draft, mode: 'SELF_PACED', hasTimer: false })}><BookOpenCheck size={18} /><span><strong>Self Paced</strong></span>{draft.mode === 'SELF_PACED' && !draft.hasTimer && <Check size={16} />}</button></div></div>{draft.mode === 'SELF_PACED' && draft.hasTimer && <label className="field short-field" style={{ marginTop: '16px' }}><span>Time limit</span><div className="input-suffix"><input type="number" min={1} max={1440} value={draft.minutes} onChange={(event) => setDraft({ ...draft, minutes: Number(event.target.value) })} /><span>minutes</span></div></label>}<label className="check-row"><input type="checkbox" checked={draft.showResults} onChange={(event) => setDraft({ ...draft, showResults: event.target.checked })} /><span><strong>Show results to students</strong></span></label></div>
+        <div className="form-panel"><div className="panel-title"><span className="step-count">01</span><div><h2>Quiz details</h2><p>Give your quiz a name and select target grade.</p></div></div><div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '16px' }}><label className="field"><span>Quiz title</span><input required maxLength={120} value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="e.g. Fractions, round one" /></label><label className="field"><span>Target Grade</span><select value={draft.grade || 'All Grades'} onChange={(event) => setDraft({ ...draft, grade: event.target.value })} style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', background: '#fff', fontSize: '14px', width: '100%' }}><option value="All Grades">All Grades (Open to all students)</option>{ALL_STUDENT_GRADES.map((g) => (<option key={g} value={g}>{g}</option>))}</select></label></div><div className="field"><span>How will students take it?</span><div className="mode-choice"><button type="button" className={draft.mode === 'LIVE' ? 'chosen' : ''} onClick={() => setDraft({ ...draft, mode: 'LIVE', hasTimer: false })}><Radio size={18} /><span><strong>Live classroom</strong></span>{draft.mode === 'LIVE' && <Check size={16} />}</button><button type="button" className={draft.mode === 'SELF_PACED' && draft.hasTimer ? 'chosen' : ''} onClick={() => setDraft({ ...draft, mode: 'SELF_PACED', hasTimer: true })}><Clock3 size={18} /><span><strong>Timed practice</strong></span>{draft.mode === 'SELF_PACED' && draft.hasTimer && <Check size={16} />}</button><button type="button" className={draft.mode === 'SELF_PACED' && !draft.hasTimer ? 'chosen' : ''} onClick={() => setDraft({ ...draft, mode: 'SELF_PACED', hasTimer: false })}><BookOpenCheck size={18} /><span><strong>Self Paced</strong></span>{draft.mode === 'SELF_PACED' && !draft.hasTimer && <Check size={16} />}</button></div></div>{draft.mode === 'SELF_PACED' && draft.hasTimer && <label className="field short-field" style={{ marginTop: '16px' }}><span>Time limit</span><div className="input-suffix"><input type="number" min={1} max={1440} value={draft.minutes} onChange={(event) => setDraft({ ...draft, minutes: Number(event.target.value) })} /><span>minutes</span></div></label>}<label className="check-row"><input type="checkbox" checked={draft.showResults} onChange={(event) => setDraft({ ...draft, showResults: event.target.checked })} /><span><strong>Show results to students</strong></span></label></div>
         {draft.questions.map((question, index) => <div className="form-panel question-editor" key={index}>
           <div className="panel-title">
             <span className="step-count">{String(index + 2).padStart(2, '0')}</span>
@@ -1681,6 +1766,9 @@ function QuizManager({ quizzes, selectedQuiz, setSelectedQuiz, liveQuiz, refresh
                   <span className={`worksheet-badge ${quiz.status === 'ACTIVE' ? 'badge-published' : quiz.status === 'CLOSED' ? 'badge-subject' : 'badge-draft'}`}>
                     {quiz.status === 'ACTIVE' ? '● LIVE NOW' : quiz.status === 'CLOSED' ? '✓ FINISHED' : 'DRAFT'}
                   </span>
+                  <span className="worksheet-badge badge-grade" style={{ background: '#f0fdf4', color: '#166534', border: '1px solid #bbf7d0', fontWeight: 600 }}>
+                    {quiz.grade || 'All Grades'}
+                  </span>
                   <select
                     className={`worksheet-badge ${quiz.mode === 'LIVE' ? 'badge-subject' : 'badge-draft'}`}
                     style={{ border: '1px solid rgba(0,0,0,0.1)', cursor: 'pointer', outline: 'none', padding: '2px 8px', borderRadius: '8px', fontWeight: 700, fontSize: '12px' }}
@@ -1783,6 +1871,10 @@ function QuizManager({ quizzes, selectedQuiz, setSelectedQuiz, liveQuiz, refresh
 
 function StudentManager({ students, refresh, setNotice, onBackToClassroom }: { students: Student[]; refresh: () => Promise<void>; setNotice: (text: string) => void; onBackToClassroom?: () => void }) {
   const [name, setName] = useState('');
+  const [grade, setGrade] = useState('Grade 6');
+  const [filterGrade, setFilterGrade] = useState('ALL');
+  const [editingStudent, setEditingStudent] = useState<{ id: string; name: string; grade: string } | null>(null);
+  const [editingSaving, setEditingSaving] = useState(false);
   const [createdPasskey, setCreatedPasskey] = useState('');
   const [createdStudentName, setCreatedStudentName] = useState('');
   const [visiblePasskeys, setVisiblePasskeys] = useState<Record<string, boolean>>({});
@@ -1791,7 +1883,7 @@ function StudentManager({ students, refresh, setNotice, onBackToClassroom }: { s
   async function addStudent(event: React.FormEvent) {
     event.preventDefault(); setCreating(true);
     try {
-      const data = await api<{ student: { name: string }; passkey: string }>('/api/students', { method: 'POST', body: JSON.stringify({ name }) });
+      const data = await api<{ student: { name: string; grade?: string }; passkey: string }>('/api/students', { method: 'POST', body: JSON.stringify({ name, grade }) });
       setCreatedPasskey(data.passkey);
       setCreatedStudentName(data.student.name || name);
       setName('');
@@ -1812,13 +1904,6 @@ function StudentManager({ students, refresh, setNotice, onBackToClassroom }: { s
     } catch (cause) { setNotice(cause instanceof Error ? cause.message : 'Unable to update student.'); }
   }
 
-  async function renameStudent(student: Student) {
-    const name = window.prompt('Student name', student.name)?.trim();
-    if (!name || name === student.name) return;
-    try { await api(`/api/students/${student.id}`, { method: 'PATCH', body: JSON.stringify({ name }) }); await refresh(); setNotice('Student name updated.'); }
-    catch (cause) { setNotice(cause instanceof Error ? cause.message : 'Unable to update student name.'); }
-  }
-
   async function removeStudent(student: Student) {
     if (!window.confirm(`Remove ${student.name} and their attempt history?`)) return;
     try { await api(`/api/students/${student.id}`, { method: 'DELETE' }); await refresh(); setNotice('Student removed.'); }
@@ -1831,6 +1916,10 @@ function StudentManager({ students, refresh, setNotice, onBackToClassroom }: { s
     }
     setVisiblePasskeys((prev) => ({ ...prev, [student.id]: !prev[student.id] }));
   }
+
+  const filteredStudents = filterGrade === 'ALL'
+    ? students
+    : students.filter((s) => (s.grade || 'Grade 6') === filterGrade);
 
   return (
     <section className="view-enter">
@@ -1851,47 +1940,110 @@ function StudentManager({ students, refresh, setNotice, onBackToClassroom }: { s
           <span className="student-total"><Users size={16} /> {students.length} students</span>
         </div>
       </div>
-      <div className="student-layout"><div className="roster-panel"><div className="panel-heading"><div><h2>List Of Students</h2><p>Manage student access and passkeys</p></div><button className="icon-button" title="Refresh students" onClick={() => void refresh()}><RefreshCw size={16} /></button></div>{students.length ? <div className="roster-list">{students.map((student, index) => {
-        const isShown = Boolean(visiblePasskeys[student.id]);
-        const passkeyVal = student.passkey || '';
-        return (
-          <div className={`roster-row ${!student.active ? 'inactive-row' : ''}`} key={student.id}>
-            <div className={`avatar avatar-roster avatar-color-${index % 4}`}>{student.name.slice(0, 1).toUpperCase()}</div>
-            <div className="roster-name">
-              <strong>{student.name}</strong>
-              <span>{student._count.attempts} quiz attempts · {student.active ? 'Active' : 'Access paused'}</span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px', fontSize: '13px' }}>
-                <span className="muted">Passkey:</span>
-                <code style={{ fontStyle: 'normal', fontWeight: 'bold', letterSpacing: isShown ? '2px' : '1px', background: '#ecfdf5', color: '#047857', border: '1px solid #a7f3d0', padding: '2px 8px', borderRadius: '6px' }}>
-                  {isShown ? (passkeyVal || '••••••') : '••••••'}
-                </code>
-                <button type="button" className="text-button" style={{ fontSize: '12px', padding: 0, color: '#047857' }} onClick={() => void togglePasskeyVisibility(student)}>
-                  {isShown ? 'Hide' : 'Show'}
-                </button>
-                <button type="button" className="text-button" style={{ fontSize: '12px', padding: 0, color: '#059669' }} onClick={async () => {
-                  let key = student.passkey;
-                  if (!key) {
-                    const data = await api<{ passkey?: string }>(`/api/students/${student.id}`, { method: 'PATCH', body: JSON.stringify({ resetPasskey: true }) });
-                    key = data.passkey || '';
-                    await refresh();
-                  }
-                  void navigator.clipboard?.writeText(key);
-                  setNotice(`Copied ${student.name}'s passkey.`);
-                }}>
-                  <Copy size={12} /> Copy
-                </button>
-              </div>
+      <div className="student-layout">
+        <div className="roster-panel">
+          <div className="panel-heading">
+            <div>
+              <h2>List Of Students</h2>
+              <p>Manage student access, grades, and passkeys</p>
             </div>
-            <div className="roster-actions">
-              <button className="icon-button" title="Edit student name" aria-label={`Edit ${student.name}`} onClick={() => void renameStudent(student)}><Pencil size={15} /></button>
-              <button className="icon-button" title="Generate a new passkey" aria-label={`Reset ${student.name}'s passkey`} onClick={() => void updateStudent(student, 'reset')}><RefreshCw size={15} /></button>
-              <button className="icon-button" title={student.active ? 'Pause access' : 'Restore access'} aria-label={`${student.active ? 'Disable' : 'Enable'} ${student.name}`} onClick={() => void updateStudent(student, student.active ? 'disable' : 'enable')}>{student.active ? <UserX size={15} /> : <UserCheck size={15} />}</button>
-              <button className="icon-button danger-hover" title="Remove student" aria-label={`Delete ${student.name}`} onClick={() => void removeStudent(student)}><Trash2 size={15} /></button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <select
+                value={filterGrade}
+                onChange={(e) => setFilterGrade(e.target.value)}
+                aria-label="Filter students by grade"
+                style={{ fontSize: '12px', padding: '5px 10px', borderRadius: '8px', border: '1px solid #cbd5e1', background: '#fff', fontWeight: 600, color: '#334155' }}
+              >
+                <option value="ALL">All Grades ({students.length})</option>
+                {ALL_STUDENT_GRADES.map((g) => {
+                  const count = students.filter((s) => (s.grade || 'Grade 6') === g).length;
+                  if (count === 0 && filterGrade !== g) return null;
+                  return <option key={g} value={g}>{g} ({count})</option>;
+                })}
+              </select>
+              <button className="icon-button" title="Refresh students" onClick={() => void refresh()}>
+                <RefreshCw size={16} />
+              </button>
             </div>
           </div>
-        );
-      })}</div> : <div className="roster-empty">No students yet. Add your first student to get started.</div>}</div>
-        <aside className="add-student-panel"><span className="overline">Add to your class</span><h2>A name and a passkey.</h2><form onSubmit={addStudent} className="form-stack" style={{ marginBottom: '24px' }}><label className="field"><span>Student name</span><input required maxLength={100} value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Maya Chen" /></label><button className="button button-primary button-wide" disabled={creating}>{creating ? 'Creating...' : <><Plus size={16} /> Add student</>}</button></form>
+          {filteredStudents.length ? (
+            <div className="roster-list">
+              {filteredStudents.map((student, index) => {
+                const isShown = Boolean(visiblePasskeys[student.id]);
+                const passkeyVal = student.passkey || '';
+                return (
+                  <div className={`roster-row ${!student.active ? 'inactive-row' : ''}`} key={student.id}>
+                    <div className={`avatar avatar-roster avatar-color-${index % 4}`}>{student.name.slice(0, 1).toUpperCase()}</div>
+                    <div className="roster-name">
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                        <strong>{student.name}</strong>
+                        <span style={{ fontSize: '11px', fontWeight: 700, padding: '2px 8px', borderRadius: '10px', background: '#e0f2fe', color: '#0369a1', border: '1px solid #bae6fd' }}>
+                          {student.grade || 'Grade 6'}
+                        </span>
+                      </div>
+                      <span>{student._count.attempts} quiz attempts · {student.active ? 'Active' : 'Access paused'}</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px', fontSize: '13px' }}>
+                        <span className="muted">Passkey:</span>
+                        <code style={{ fontStyle: 'normal', fontWeight: 'bold', letterSpacing: isShown ? '2px' : '1px', background: '#ecfdf5', color: '#047857', border: '1px solid #a7f3d0', padding: '2px 8px', borderRadius: '6px' }}>
+                          {isShown ? (passkeyVal || '••••••') : '••••••'}
+                        </code>
+                        <button type="button" className="text-button" style={{ fontSize: '12px', padding: 0, color: '#047857' }} onClick={() => void togglePasskeyVisibility(student)}>
+                          {isShown ? 'Hide' : 'Show'}
+                        </button>
+                        <button type="button" className="text-button" style={{ fontSize: '12px', padding: 0, color: '#059669' }} onClick={async () => {
+                          let key = student.passkey;
+                          if (!key) {
+                            const data = await api<{ passkey?: string }>(`/api/students/${student.id}`, { method: 'PATCH', body: JSON.stringify({ resetPasskey: true }) });
+                            key = data.passkey || '';
+                            await refresh();
+                          }
+                          void navigator.clipboard?.writeText(key);
+                          setNotice(`Copied ${student.name}'s passkey.`);
+                        }}>
+                          <Copy size={12} /> Copy
+                        </button>
+                      </div>
+                    </div>
+                    <div className="roster-actions">
+                      <button className="icon-button" title="Edit student name & grade" aria-label={`Edit ${student.name}`} onClick={() => setEditingStudent({ id: student.id, name: student.name, grade: student.grade || 'Grade 6' })}><Pencil size={15} /></button>
+                      <button className="icon-button" title="Generate a new passkey" aria-label={`Reset ${student.name}'s passkey`} onClick={() => void updateStudent(student, 'reset')}><RefreshCw size={15} /></button>
+                      <button className="icon-button" title={student.active ? 'Pause access' : 'Restore access'} aria-label={`${student.active ? 'Disable' : 'Enable'} ${student.name}`} onClick={() => void updateStudent(student, student.active ? 'disable' : 'enable')}>{student.active ? <UserX size={15} /> : <UserCheck size={15} />}</button>
+                      <button className="icon-button danger-hover" title="Remove student" aria-label={`Delete ${student.name}`} onClick={() => void removeStudent(student)}><Trash2 size={15} /></button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="roster-empty">
+              {students.length ? `No students found in ${filterGrade}.` : 'No students yet. Add your first student to get started.'}
+            </div>
+          )}
+        </div>
+        <aside className="add-student-panel">
+          <span className="overline">Add to your class</span>
+          <h2>A name, grade & passkey.</h2>
+          <form onSubmit={addStudent} className="form-stack" style={{ marginBottom: '24px' }}>
+            <label className="field">
+              <span>Student name</span>
+              <input required maxLength={100} value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Maya Chen" />
+            </label>
+            <label className="field">
+              <span>Grade / Class</span>
+              <select
+                value={grade}
+                onChange={(event) => setGrade(event.target.value)}
+                style={{ padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', background: '#fff', fontSize: '14px', width: '100%' }}
+              >
+                {ALL_STUDENT_GRADES.map((g) => (
+                  <option key={g} value={g}>{g}</option>
+                ))}
+              </select>
+            </label>
+            <button className="button button-primary button-wide" disabled={creating}>
+              {creating ? 'Creating...' : <><Plus size={16} /> Add student</>}
+            </button>
+          </form>
           {createdPasskey && (
             <div className="passkey-reveal" style={{ marginTop: '16px', marginBottom: '20px', width: '100%' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
@@ -1911,9 +2063,67 @@ function StudentManager({ students, refresh, setNotice, onBackToClassroom }: { s
               </div>
             </div>
           )}
-          <div className="privacy-callout"><ShieldCheck size={16} /><span>Passkeys are private to each student. Their answers are never shown to other students.</span></div></aside>
+          <div className="privacy-callout"><ShieldCheck size={16} /><span>Passkeys are private to each student. Their answers are never shown to other students.</span></div>
+        </aside>
       </div>
-    </section>);
+
+      {editingStudent && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.45)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: '16px' }}>
+          <div style={{ background: '#fff', borderRadius: '16px', padding: '24px', maxWidth: '420px', width: '100%', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '18px' }}>
+              <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 700, color: '#0f172a' }}>Edit Student Details</h3>
+              <button type="button" className="icon-button quiet" onClick={() => setEditingStudent(null)}><X size={16} /></button>
+            </div>
+            <form onSubmit={async (e) => {
+              e.preventDefault();
+              setEditingSaving(true);
+              try {
+                await api(`/api/students/${editingStudent.id}`, {
+                  method: 'PATCH',
+                  body: JSON.stringify({ name: editingStudent.name.trim(), grade: editingStudent.grade })
+                });
+                setEditingStudent(null);
+                await refresh();
+                setNotice('Student details updated.');
+              } catch (cause) {
+                setNotice(cause instanceof Error ? cause.message : 'Unable to update student.');
+              } finally {
+                setEditingSaving(false);
+              }
+            }} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <label className="field">
+                <span>Student Name</span>
+                <input
+                  required
+                  maxLength={100}
+                  value={editingStudent.name}
+                  onChange={(e) => setEditingStudent({ ...editingStudent, name: e.target.value })}
+                />
+              </label>
+              <label className="field">
+                <span>Grade / Class</span>
+                <select
+                  value={editingStudent.grade}
+                  onChange={(e) => setEditingStudent({ ...editingStudent, grade: e.target.value })}
+                  style={{ padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', background: '#fff', fontSize: '14px' }}
+                >
+                  {ALL_STUDENT_GRADES.map((g) => (
+                    <option key={g} value={g}>{g}</option>
+                  ))}
+                </select>
+              </label>
+              <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '12px' }}>
+                <button type="button" className="button button-secondary" onClick={() => setEditingStudent(null)}>Cancel</button>
+                <button type="submit" className="button button-primary" disabled={editingSaving}>
+                  {editingSaving ? 'Saving...' : 'Save Changes'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </section>
+  );
 }
 
 function ResultsPanel({ quizzes, selectedQuiz, setSelectedQuiz, results, distribution, onExport, onResetAttempt }: { quizzes: Quiz[]; selectedQuiz: string; setSelectedQuiz: (id: string) => void; results: Result[]; distribution: { question: string; options: { text: string; correct: boolean; count: number }[] }[]; onExport: () => void; onResetAttempt: (result: Result) => Promise<void> }) {
@@ -2266,7 +2476,7 @@ function StudentApp({ user, onSignOut, notice, setNotice, onViewPortal }: { user
       ? activeQuiz.totalMarks
       : activeQuiz.questions.reduce((sum, q) => sum + (q.marks ?? 1), 0);
 
-    return <main className="student-shell"><header className="student-topbar"><div className="student-brand"><span className="brand-mark"><img src="/logo.png" alt="Maths Mentor" className="brand-logo" /></span><span>Maths Mentor</span></div><div className="student-top-right"><span className="student-name"><span className="avatar avatar-small">{user.name?.slice(0, 1).toUpperCase()}</span>{user.name}</span><button className="button button-secondary" style={{ fontSize: '13px', padding: '5px 12px', minHeight: '34px', gap: '6px' }} onClick={() => { setActiveQuiz(null); sessionStorage.removeItem('activeQuizId'); void loadQuizzes(); }}><ArrowLeft size={14} /> Back to Classroom</button></div></header>
+    return <main className="student-shell"><header className="student-topbar"><div className="student-brand"><span className="brand-mark"><img src="/logo.png" alt="EduAshram" className="brand-logo" /></span><span>EduAshram</span></div><div className="student-top-right"><span className="student-name"><span className="avatar avatar-small">{user.name?.slice(0, 1).toUpperCase()}</span>{user.name}</span><button className="button button-secondary" style={{ fontSize: '13px', padding: '5px 12px', minHeight: '34px', gap: '6px' }} onClick={() => { setActiveQuiz(null); sessionStorage.removeItem('activeQuizId'); void loadQuizzes(); }}><ArrowLeft size={14} /> Back to Classroom</button></div></header>
       <div className="student-quiz-wrap">{isFinished ? (
         <div className="student-review-shell">
           <div className="submitted-card review-header-card">
@@ -2396,8 +2606,8 @@ function StudentApp({ user, onSignOut, notice, setNotice, onViewPortal }: { user
     <div className="app-shell">
       <aside className="sidebar">
         <div className="sidebar-brand">
-          <span className="brand-mark"><img src="/logo.png" alt="Maths Mentor" className="brand-logo" /></span>
-          <span>Maths Mentor</span>
+          <span className="brand-mark"><img src="/logo.png" alt="EduAshram" className="brand-logo" /></span>
+          <span>EduAshram</span>
           <span className="brand-dot" />
         </div>
         <div className="sidebar-label">STUDENT DASHBOARD</div>
@@ -2436,7 +2646,7 @@ function StudentApp({ user, onSignOut, notice, setNotice, onViewPortal }: { user
             <div className="avatar avatar-green">{(user.name ?? 'S').slice(0, 1).toUpperCase()}</div>
             <div className="profile-copy">
               <strong>{user.name}</strong>
-              <span>Student account</span>
+              <span>{user.grade ? `${user.grade} · Student` : 'Student account'}</span>
             </div>
             <button className="icon-button quiet" title="Sign out" aria-label="Sign out" onClick={onSignOut}>
               <LogOut size={16} />
@@ -2486,7 +2696,12 @@ function StudentApp({ user, onSignOut, notice, setNotice, onViewPortal }: { user
                   <div className="student-welcome" style={{ marginBottom: '28px' }}>
                     <div>
                       <span className="overline">Your classroom</span>
-                      <h1>Hi, {user.name?.split(' ')[0]}.</h1>
+                      <h1 style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                        Hi, {user.name?.split(' ')[0]}.
+                        <span style={{ fontSize: '13px', fontWeight: 700, padding: '3px 10px', borderRadius: '12px', background: '#e0f2fe', color: '#0369a1', border: '1px solid #bae6fd' }}>
+                          {user.grade || 'Grade 6'}
+                        </span>
+                      </h1>
                       <p>Active quizzes and worksheets ready for you to take</p>
                     </div>
                     <div className="welcome-mark"><Sparkles size={25} /></div>

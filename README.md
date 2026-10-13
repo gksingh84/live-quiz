@@ -1,4 +1,4 @@
-# Maths Mentor
+# EduAshram (eduashram.in)
 
 An interactive math classroom quiz platform with teacher-led live rounds, timed self-paced quizzes, student passkeys, persisted results, and real-time classroom updates.
 
@@ -44,7 +44,7 @@ The included Docker Compose file is intended for local development, not as a pub
 
 ## Version 2: Complete Education Portal & Study Materials (Grades 4–10)
 
-Version 2 transforms Maths Mentor into an open, full-fledged educational portal for school students and teachers:
+Version 2 transforms EduAshram into an open, full-fledged educational portal for school students and teachers:
 
 - **Public Educational Hub (No login required)**: Anyone with the link can explore study materials, chapter summaries, formulas, presentations, and video lectures.
 - **Curriculum Scope**: Focused on **Grade 4 to Grade 10** (CBSE & ICSE), architected for smooth future expansion to Grades 11 and 12.

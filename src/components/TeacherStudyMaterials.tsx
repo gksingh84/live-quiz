@@ -22,7 +22,9 @@ import {
   AlignLeft,
   AlignCenter,
   AlignRight,
+  FileCheck,
 } from 'lucide-react';
+import { WorksheetQuestionBuilder } from './WorksheetQuestionBuilder';
 import {
   type StudyMaterial,
   type StudyMediaType,
@@ -169,7 +171,7 @@ export function TeacherStudyMaterials({ setNotice }: TeacherStudyMaterialsProps)
               <div className="admin-card-header">
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                   <span className={`media-type-badge media-type-${item.mediaType.toLowerCase()}`}>
-                    {item.mediaType === 'VIDEO' ? <Video size={13} /> : item.mediaType === 'PDF' ? <FileText size={13} /> : <BookOpen size={13} />} {item.mediaType}
+                    {item.mediaType === 'VIDEO' ? <Video size={13} /> : item.mediaType === 'PDF' ? <FileText size={13} /> : item.mediaType === 'WORKSHEET' ? <FileCheck size={13} /> : <BookOpen size={13} />} {item.mediaType}
                   </span>
                   <span className="grade-badge-overlay" style={{ fontSize: '11px', padding: '2px 8px' }}>
                     {item.grade}
@@ -1190,6 +1192,7 @@ function StudyMaterialEditorModal({
             <label className="field compact-field">
               <span>Media Format <span className="required-star">*</span></span>
               <select value={mediaType} onChange={(e) => setMediaType(e.target.value as StudyMediaType)}>
+                <option value="WORKSHEET">📝 Interactive Worksheet (with Instant Practice & PDF)</option>
                 <option value="ARTICLE">📖 Article / Revision Notes</option>
                 <option value="PDF">📄 PDF Document</option>
                 <option value="VIDEO">🎥 Video Lesson</option>
@@ -1231,10 +1234,12 @@ function StudyMaterialEditorModal({
             </label>
           )}
 
-          {(mediaType === 'PDF' || mediaType === 'PRESENTATION' || mediaType === 'IMAGE') && (
+          {(mediaType === 'PDF' || mediaType === 'PRESENTATION' || mediaType === 'IMAGE' || mediaType === 'WORKSHEET') && (
             <div style={{ background: '#f8fafc', padding: '14px', borderRadius: '10px', border: '1px solid #e2e8f0' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                <strong style={{ fontSize: '13px', color: '#1e293b' }}>Attach File ({mediaType}):</strong>
+                <strong style={{ fontSize: '13px', color: '#1e293b' }}>
+                  {mediaType === 'WORKSHEET' ? 'Attach Optional Printable PDF Worksheet:' : `Attach File (${mediaType}):`}
+                </strong>
                 <button
                   type="button"
                   className="button button-secondary"
@@ -1242,12 +1247,12 @@ function StudyMaterialEditorModal({
                   onClick={() => fileInputRef.current?.click()}
                   disabled={uploading}
                 >
-                  <UploadCloud size={14} /> {uploading ? 'Uploading...' : 'Upload File'}
+                  <UploadCloud size={14} /> {uploading ? 'Uploading...' : 'Upload PDF'}
                 </button>
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept={mediaType === 'PDF' ? '.pdf' : mediaType === 'IMAGE' ? 'image/*' : '.pdf,.ppt,.pptx'}
+                  accept={mediaType === 'IMAGE' ? 'image/*' : '.pdf'}
                   onChange={handleFileUpload}
                   style={{ display: 'none' }}
                 />
@@ -1336,8 +1341,17 @@ function StudyMaterialEditorModal({
             )}
           </div>
 
-          {/* Detailed Notes & Content with Rich Formatting Toolbar */}
-          <div className="field compact-field" style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          {/* Content Section: Worksheet Questions Builder OR Article Rich Text Editor */}
+          {mediaType === 'WORKSHEET' ? (
+            <WorksheetQuestionBuilder
+              initialContent={contentRef.current}
+              onChange={(json) => {
+                contentRef.current = json;
+              }}
+              subject={subject}
+            />
+          ) : (
+            <div className="field compact-field" style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ fontWeight: 600, fontSize: '13.5px', color: '#1e293b' }}>
                 Detailed Notes & Content (HTML or Text)
@@ -1757,6 +1771,7 @@ function StudyMaterialEditorModal({
 
             </div>
           </div>
+          )}
 
           <div className="study-editor-footer">
             <button type="button" className="button button-secondary" onClick={attemptClose}>

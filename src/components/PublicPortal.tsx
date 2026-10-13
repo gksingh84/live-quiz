@@ -19,7 +19,11 @@ import {
   ChevronRight,
   ExternalLink,
   Share2,
+  FileCheck,
+  UserPlus,
+  Lock,
 } from 'lucide-react';
+import { InteractiveWorksheetViewer } from './InteractiveWorksheetViewer';
 import {
   type StudyMaterial,
   STANDARD_GRADES,
@@ -28,8 +32,9 @@ import {
 } from '../types/studyMaterial';
 
 interface PublicPortalProps {
-  user: { role: 'admin' | 'student'; name?: string; email?: string } | null;
-  onOpenLogin: (mode: 'student' | 'admin') => void;
+  user: { role: 'admin' | 'teacher' | 'superadmin' | 'student'; name?: string; email?: string } | null;
+  onOpenLogin: (mode: 'student' | 'teacher_login' | 'teacher_signup' | 'admin') => void;
+  onOpenSuperAdmin?: () => void;
   onGoToDashboard: () => void;
   onSignOut: () => void;
 }
@@ -37,6 +42,7 @@ interface PublicPortalProps {
 export function PublicPortal({
   user,
   onOpenLogin,
+  onOpenSuperAdmin,
   onGoToDashboard,
   onSignOut,
 }: PublicPortalProps) {
@@ -198,7 +204,7 @@ export function PublicPortal({
   function handleShare(item: StudyMaterial) {
     const url = window.location.href;
     if (navigator.clipboard) {
-      navigator.clipboard.writeText(`${item.title} - Read on Maths Mentor: ${url}`);
+      navigator.clipboard.writeText(`${item.title} - Read on EduAshram: ${url}`);
       setCopyFeedback(true);
       setTimeout(() => setCopyFeedback(false), 2000);
     }
@@ -216,9 +222,9 @@ export function PublicPortal({
         <div className="navbar-container">
           <div className="navbar-left" onClick={() => setActiveGrade('ALL')} style={{ cursor: 'pointer' }}>
             <span className="brand-mark">
-              <img src="/logo.png" alt="Maths Mentor" className="brand-logo" />
+              <img src="/logo.png" alt="EduAshram" className="brand-logo" />
             </span>
-            <span className="brand-name">Maths Mentor</span>
+            <span className="brand-name">EduAshram</span>
           </div>
 
           <nav className="navbar-links">
@@ -258,10 +264,10 @@ export function PublicPortal({
             {user ? (
               <div className="user-nav-box">
                 <span className="user-role-badge">
-                  {user.role === 'admin' ? 'Teacher' : 'Student'}: {user.name || user.email?.split('@')[0]}
+                  {user.role === 'superadmin' ? 'Master Admin' : (user.role === 'admin' || user.role === 'teacher') ? 'Teacher' : 'Student'}: {user.name || user.email?.split('@')[0]}
                 </span>
                 <button className="button button-primary nav-action-btn" onClick={onGoToDashboard}>
-                  Go to Dashboard <ArrowRight size={14} />
+                  {user.role === 'superadmin' ? 'Admin Console' : 'Go to Dashboard'} <ArrowRight size={14} />
                 </button>
                 <button className="button button-secondary nav-action-btn" onClick={onSignOut} title="Sign Out">
                   Logout
@@ -278,10 +284,18 @@ export function PublicPortal({
                 </button>
                 <button
                   id="btn-teacher-login-nav"
-                  className="button button-primary auth-btn teacher-auth-btn"
-                  onClick={() => onOpenLogin('admin')}
+                  className="button button-secondary auth-btn"
+                  onClick={() => onOpenLogin('teacher_login')}
                 >
                   <LogIn size={15} /> Teacher Sign In
+                </button>
+                <button
+                  id="btn-teacher-signup-nav"
+                  className="button button-primary auth-btn teacher-auth-btn"
+                  style={{ background: '#7c3aed', borderColor: '#7c3aed' }}
+                  onClick={() => onOpenLogin('teacher_signup')}
+                >
+                  <UserPlus size={15} /> Join as Teacher
                 </button>
               </div>
             )}
@@ -314,8 +328,8 @@ export function PublicPortal({
               <span>FREE COMPREHENSIVE LEARNING PORTAL · GRADES 4 TO 10</span>
             </div>
             <h1 className="hero-title reveal-on-scroll">
-              Understand Concepts.<br />
-              Master Every <span className="hero-gradient-text">Concept.</span>
+              Understand Better.<br />
+              Achieve <span className="hero-gradient-text">More.</span>
             </h1>
             <p className="hero-subtitle reveal-on-scroll">
               High-quality study material for students from Grade 4 to Grade 10. Free access for everyone.
@@ -393,6 +407,8 @@ export function PublicPortal({
                                 <Presentation size={15} />
                               ) : item.mediaType === 'IMAGE' ? (
                                 <ImageIcon size={15} />
+                              ) : item.mediaType === 'WORKSHEET' ? (
+                                <FileCheck size={15} />
                               ) : (
                                 <FileText size={15} />
                               )}
@@ -492,6 +508,8 @@ export function PublicPortal({
                                 <Presentation size={13} />
                               ) : item.mediaType === 'IMAGE' ? (
                                 <ImageIcon size={13} />
+                              ) : item.mediaType === 'WORKSHEET' ? (
+                                <FileCheck size={13} />
                               ) : (
                                 <FileText size={13} />
                               )}
@@ -575,6 +593,12 @@ export function PublicPortal({
                   onClick={() => setSelectedMediaType('ALL')}
                 >
                   All Types
+                </button>
+                <button
+                  className={`filter-pill ${selectedMediaType === 'WORKSHEET' ? 'active' : ''}`}
+                  onClick={() => setSelectedMediaType('WORKSHEET')}
+                >
+                  📝 Worksheets
                 </button>
                 <button
                   className={`filter-pill ${selectedMediaType === 'ARTICLE' ? 'active' : ''}`}
@@ -670,8 +694,8 @@ export function PublicPortal({
         <div className="portal-container footer-inner">
           <div className="footer-brand">
             <div className="footer-logo">
-              <span className="brand-mark"><img src="/logo.png" alt="Maths Mentor" className="brand-logo" /></span>
-              <span className="footer-title">Maths Mentor</span>
+              <span className="brand-mark"><img src="/logo.png" alt="EduAshram" className="brand-logo" /></span>
+              <span className="footer-title">EduAshram</span>
             </div>
             <p>Empowering students across Grades 4 to 10 with clear concept explanations, guided practice, and continuous learning.</p>
           </div>
@@ -693,14 +717,22 @@ export function PublicPortal({
               <button onClick={() => onOpenLogin('student')}>
                 <GraduationCap size={14} /> Student Passkey Login
               </button>
-              <button onClick={() => onOpenLogin('admin')}>
-                <LogIn size={14} /> Teacher Admin Portal
+              <button onClick={() => onOpenLogin('teacher_login')}>
+                <LogIn size={14} /> Teacher Sign In
               </button>
+              <button onClick={() => onOpenLogin('teacher_signup')}>
+                <UserPlus size={14} /> Register as New Teacher
+              </button>
+              {onOpenSuperAdmin && (
+                <button onClick={onOpenSuperAdmin} style={{ color: '#94a3b8', marginTop: '6px' }} title="Protected platform owner admin console">
+                  <Lock size={13} /> Master Admin Console
+                </button>
+              )}
             </div>
           </div>
         </div>
         <div className="footer-bottom-line">
-          <span>© {new Date().getFullYear()} Maths Mentor · Learn · Practise · Excel.</span>
+          <span>© {new Date().getFullYear()} EduAshram · Learn · Practise · Excel.</span>
         </div>
       </footer>
 
@@ -739,6 +771,7 @@ function ArticleBlogCard({
     VIDEO: <Video size={14} />,
     PRESENTATION: <Presentation size={14} />,
     IMAGE: <ImageIcon size={14} />,
+    WORKSHEET: <FileCheck size={14} />,
   }[material.mediaType] || <BookOpen size={14} />;
 
   const mediaLabel = {
@@ -747,6 +780,7 @@ function ArticleBlogCard({
     VIDEO: 'Video Lesson',
     PRESENTATION: 'Slide Deck',
     IMAGE: 'Infographic',
+    WORKSHEET: 'Worksheet',
   }[material.mediaType] || 'Study Material';
 
   const coverUrl = useMemo(() => {
@@ -858,7 +892,7 @@ function MaterialViewerModal({
   function printArticle() {
     const win = window.open('', '_blank');
     if (!win) return;
-    win.document.write(`<!DOCTYPE html><html><head><title>${material.title} - Maths Mentor</title><style>
+    win.document.write(`<!DOCTYPE html><html><head><title>${material.title} - EduAshram</title><style>
       body { font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #1e293b; padding: 25mm 20mm; max-width: 800px; margin: 0 auto; }
       h1 { font-size: 24px; color: #0f172a; margin-bottom: 6px; }
       .meta { font-size: 13px; color: #64748b; margin-bottom: 24px; border-bottom: 1px solid #cbd5e1; padding-bottom: 12px; }
@@ -868,7 +902,7 @@ function MaterialViewerModal({
       blockquote { border-left: 3px solid #0284c7; padding-left: 14px; margin: 14px 0; color: #334155; }
     </style></head><body>
       <h1>${material.title}</h1>
-      <div class="meta">${material.grade} · ${material.subject} · Maths Mentor</div>
+      <div class="meta">${material.grade} · ${material.subject} · EduAshram</div>
       <div>${material.content || `<p>${material.description || ''}</p>`}</div>
     </body></html>`);
     win.document.close();
@@ -917,9 +951,14 @@ function MaterialViewerModal({
             <span><Eye size={13} /> {material.views} views</span>
           </div>
 
-          {/* Media Section: Video / File / Presentation / Image */}
-          {material.mediaType === 'VIDEO' && embedVideoUrl && (
-            <div className="viewer-video-wrapper">
+          {/* If Worksheet, render Interactive Worksheet Solver */}
+          {material.mediaType === 'WORKSHEET' ? (
+            <InteractiveWorksheetViewer material={material} onOpenQuizLogin={onOpenQuizLogin} />
+          ) : (
+            <>
+              {/* Media Section: Video / File / Presentation / Image */}
+              {material.mediaType === 'VIDEO' && embedVideoUrl && (
+                <div className="viewer-video-wrapper">
               <iframe
                 src={embedVideoUrl}
                 title={material.title}
@@ -990,6 +1029,8 @@ function MaterialViewerModal({
               Join Quiz with Passkey <ArrowRight size={15} />
             </button>
           </div>
+            </>
+          )}
         </div>
       </div>
     </div>

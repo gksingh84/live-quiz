@@ -15,29 +15,62 @@ model Admin {
   createdAt    DateTime @default(now())
 }
 
+model SuperAdmin {
+  id            String   @id @default(cuid())
+  username      String   @unique
+  email         String   @unique
+  passwordHash  String
+  secretKeyHash String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model Teacher {
+  id              String            @id @default(cuid())
+  name            String
+  email           String            @unique
+  passwordHash    String
+  school          String?
+  subject         String?
+  phone           String?
+  apiKey          String?
+  active          Boolean           @default(false)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  students        Student[]
+  quizzes         Quiz[]
+  worksheetPapers WorksheetPaper[]
+}
+
 model Student {
   id                   String                @id @default(cuid())
   name                 String
+  grade                String?               @default("Grade 6")
   passkey              String?
   passkeyHash          String
   passkeyLookup        String                @unique
   active               Boolean               @default(true)
+  teacherId            String?
+  teacher              Teacher?              @relation(fields: [teacherId], references: [id], onDelete: Cascade)
   createdAt            DateTime              @default(now())
   attempts             Attempt[]
   worksheetSubmissions WorksheetSubmission[]
 }
 
 model Quiz {
-  id                       String    @id @default(cuid())
+  id                       String     @id @default(cuid())
   title                    String
+  grade                    String?
   mode                     QuizMode
   status                   QuizStatus @default(DRAFT)
   timeLimitSeconds         Int?
-  showResults              Boolean   @default(true)
-  currentQuestionIndex     Int       @default(0)
-  currentAnswerRevealed    Boolean   @default(false)
-  createdAt                DateTime  @default(now())
-  updatedAt                DateTime  @updatedAt
+  showResults              Boolean    @default(true)
+  currentQuestionIndex     Int        @default(0)
+  currentAnswerRevealed    Boolean    @default(false)
+  teacherId                String?
+  teacher                  Teacher?   @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  createdAt                DateTime   @default(now())
+  updatedAt                DateTime   @updatedAt
   questions                Question[]
   attempts                 Attempt[]
 }
@@ -118,6 +151,8 @@ model WorksheetPaper {
   totalMarks  Int                   @default(100)
   content     String
   status      WorksheetStatus       @default(PUBLISHED)
+  teacherId   String?
+  teacher     Teacher?              @relation(fields: [teacherId], references: [id], onDelete: Cascade)
   createdAt   DateTime              @default(now())
   updatedAt   DateTime              @updatedAt
   submissions WorksheetSubmission[]
@@ -164,7 +199,7 @@ model StudyMaterial {
   videoUrl    String?
   coverImage  String?
   readTime    String?
-  authorName  String         @default("Maths Mentor")
+  authorName  String         @default("EduAshram")
   status      MaterialStatus @default(PUBLISHED)
   views       Int            @default(0)
   createdAt   DateTime       @default(now())
@@ -177,6 +212,7 @@ enum StudyMediaType {
   VIDEO
   PRESENTATION
   IMAGE
+  WORKSHEET
 }
 
 enum MaterialStatus {

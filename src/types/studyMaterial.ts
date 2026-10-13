@@ -1,5 +1,32 @@
-export type StudyMediaType = 'ARTICLE' | 'PDF' | 'VIDEO' | 'PRESENTATION' | 'IMAGE';
+export type StudyMediaType = 'ARTICLE' | 'PDF' | 'VIDEO' | 'PRESENTATION' | 'IMAGE' | 'WORKSHEET';
 export type MaterialStatus = 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
+
+export type WorksheetQuestion = {
+  id: string;
+  question: string;
+  options: string[];
+  correctIndex: number;
+  explanation?: string;
+  hint?: string;
+};
+
+export type WorksheetData = {
+  passage?: string;
+  instructions?: string;
+  questions: WorksheetQuestion[];
+};
+
+export function parseWorksheetData(raw?: string | null): WorksheetData | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && Array.isArray(parsed.questions)) {
+      return parsed as WorksheetData;
+    }
+  } catch {}
+  return null;
+}
+
 
 export type StudyMaterial = {
   id: string;

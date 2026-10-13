@@ -2,23 +2,81 @@ import 'dotenv/config';
 import bcrypt from 'bcryptjs';
 import { PrismaClient } from '@prisma/client';
 
-const prisma = new PrismaClient();
+const prisma: any = new PrismaClient();
+const db: any = prisma;
 
 async function main() {
-  const email = process.env.ADMIN_EMAIL;
-  const password = process.env.ADMIN_PASSWORD;
-  if (!email || !password) throw new Error('Set ADMIN_EMAIL and ADMIN_PASSWORD in .env first.');
-  await prisma.admin.upsert({
+  const email = process.env.ADMIN_EMAIL || 'gaurav.kr.singh@hotmail.com';
+  const password = process.env.ADMIN_PASSWORD || 'adminpassword123';
+  const superAdminUsername = process.env.SUPERADMIN_USERNAME || 'admin';
+  const superAdminEmail = process.env.SUPERADMIN_EMAIL || email;
+  const superAdminPassword = process.env.SUPERADMIN_PASSWORD || password;
+  const superAdminSecretKey = process.env.SUPERADMIN_SECRET_KEY || 'eduashram@secret2026';
+
+  // 1. Seed or Upsert Super Admin
+  const superAdminPasswordHash = await bcrypt.hash(superAdminPassword, 12);
+  const superAdminSecretKeyHash = await bcrypt.hash(superAdminSecretKey, 12);
+  const superAdmin = await db.superAdmin.upsert({
+    where: { username: superAdminUsername },
+    update: {
+      email: superAdminEmail,
+      passwordHash: superAdminPasswordHash,
+      secretKeyHash: superAdminSecretKeyHash,
+    },
+    create: {
+      username: superAdminUsername,
+      email: superAdminEmail,
+      passwordHash: superAdminPasswordHash,
+      secretKeyHash: superAdminSecretKeyHash,
+    },
+  });
+  console.log(`✅ Super Admin account ready: username=${superAdmin.username}, email=${superAdmin.email}`);
+
+  // 2. Legacy Admin table backward compatibility
+  await db.admin.upsert({
     where: { email },
     update: { passwordHash: await bcrypt.hash(password, 12) },
     create: { email, passwordHash: await bcrypt.hash(password, 12) },
   });
-  console.log(`Admin account ready for ${email}`);
 
-  const existingCount = await (prisma as any).studyMaterial.count();
-  if (existingCount === 0) {
-    console.log('Seeding initial Study Materials for Grade 4 to Grade 10...');
-    const sampleMaterials = [
+  // 3. Upsert User as the First Teacher with all permissions enabled
+  const teacherPasswordHash = await bcrypt.hash(password, 12);
+  const firstTeacher = await db.teacher.upsert({
+    where: { email },
+    update: {
+      name: 'Gaurav Kumar Singh',
+      active: true,
+      school: 'EduAshram Central',
+      subject: 'Mathematics',
+    },
+    create: {
+      name: 'Gaurav Kumar Singh',
+      email,
+      passwordHash: teacherPasswordHash,
+      school: 'EduAshram Central',
+      subject: 'Mathematics',
+      active: true,
+    },
+  });
+  console.log(`✅ First Teacher profile ready: ${firstTeacher.name} (${firstTeacher.email})`);
+
+  // 4. Migrate all existing students, quizzes, and worksheets to First Teacher
+  const migratedStudents = await db.student.updateMany({
+    where: { teacherId: null },
+    data: { teacherId: firstTeacher.id },
+  });
+  const migratedQuizzes = await db.quiz.updateMany({
+    where: { teacherId: null },
+    data: { teacherId: firstTeacher.id },
+  });
+  const migratedWorksheets = await db.worksheetPaper.updateMany({
+    where: { teacherId: null },
+    data: { teacherId: firstTeacher.id },
+  });
+  console.log(`✅ Data migration complete: linked ${migratedStudents.count} students, ${migratedQuizzes.count} quizzes, and ${migratedWorksheets.count} worksheets to first teacher (${firstTeacher.name}).`);
+
+  console.log('Checking and seeding Study Materials & Worksheets for Grade 4 to Grade 10...');
+  const sampleMaterials = [
       {
         title: 'Visual Guide to Fractions: Parts of a Whole',
         description: 'Understand proper, improper, and mixed fractions with intuitive visual circle diagrams and real-world pizza slices.',
@@ -42,7 +100,7 @@ async function main() {
         mediaType: 'ARTICLE',
         coverImage: 'https://images.unsplash.com/photo-1596495578065-6e0763fa1178?w=800&auto=format&fit=crop&q=60',
         readTime: '5 min read',
-        authorName: 'Maths Mentor Faculty',
+        authorName: 'EduAshram Faculty',
         views: 142,
       },
       {
@@ -61,7 +119,7 @@ async function main() {
         mediaType: 'PRESENTATION',
         coverImage: 'https://images.unsplash.com/photo-1634128221889-82ed6efebfc3?w=800&auto=format&fit=crop&q=60',
         readTime: '8 min slides',
-        authorName: 'Maths Mentor Faculty',
+        authorName: 'EduAshram Faculty',
         views: 98,
       },
       {
@@ -86,7 +144,7 @@ async function main() {
         videoUrl: 'https://www.youtube.com/watch?v=OAoLCXpao6s',
         coverImage: 'https://images.unsplash.com/photo-1509228468518-180dd4864904?w=800&auto=format&fit=crop&q=60',
         readTime: '12 min video',
-        authorName: 'Maths Mentor Faculty',
+        authorName: 'EduAshram Faculty',
         views: 310,
       },
       {
@@ -133,7 +191,7 @@ async function main() {
         mediaType: 'ARTICLE',
         coverImage: 'https://images.unsplash.com/photo-1635070041078-e363dbe005cb?w=800&auto=format&fit=crop&q=60',
         readTime: '7 min read',
-        authorName: 'Maths Mentor Faculty',
+        authorName: 'EduAshram Faculty',
         views: 185,
       },
       {
@@ -155,7 +213,7 @@ async function main() {
         mediaType: 'ARTICLE',
         coverImage: 'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?w=800&auto=format&fit=crop&q=60',
         readTime: '9 min read',
-        authorName: 'Maths Mentor Faculty',
+        authorName: 'EduAshram Faculty',
         views: 412,
       },
       {
@@ -192,7 +250,7 @@ async function main() {
         mediaType: 'ARTICLE',
         coverImage: 'https://images.unsplash.com/photo-1453733197797-0b96869576a1?w=800&auto=format&fit=crop&q=60',
         readTime: '8 min read',
-        authorName: 'Maths Mentor Faculty',
+        authorName: 'EduAshram Faculty',
         views: 380,
       },
       {
@@ -219,7 +277,7 @@ async function main() {
         mediaType: 'PDF',
         coverImage: 'https://images.unsplash.com/photo-1509228468518-180dd4864904?w=800&auto=format&fit=crop&q=60',
         readTime: '15 min read',
-        authorName: 'Maths Mentor Faculty',
+        authorName: 'EduAshram Faculty',
         views: 740,
       },
       {
@@ -241,16 +299,148 @@ async function main() {
         videoUrl: 'https://www.youtube.com/watch?v=IlNAgd5U3iM',
         coverImage: 'https://images.unsplash.com/photo-1596495578065-6e0763fa1178?w=800&auto=format&fit=crop&q=60',
         readTime: '16 min video',
-        authorName: 'Maths Mentor Faculty',
+        authorName: 'EduAshram Faculty',
         views: 615,
+      },
+      {
+        title: 'Fractions & Decimals Interactive Self-Practice Worksheet',
+        description: 'Solve step-by-step problems on comparing fractions, decimal conversions, and place value with instant answer checks.',
+        content: JSON.stringify({
+          passage: 'Recall: A fraction represents part of a whole. Decimals are another way of writing tenths, hundredths, and thousandths.',
+          questions: [
+            {
+              id: 'ws_m1',
+              question: 'Which of the following fractions is equivalent to 3/4?',
+              options: ['6/8', '5/6', '9/16', '7/10'],
+              correctIndex: 0,
+              explanation: 'Multiply both numerator and denominator by 2: (3×2)/(4×2) = 6/8.',
+              hint: 'Look for common multipliers.'
+            },
+            {
+              id: 'ws_m2',
+              question: 'Convert the decimal 0.6 into a simplified fraction:',
+              options: ['6/10', '3/5', '2/3', '1/6'],
+              correctIndex: 1,
+              explanation: '0.6 = 6/10. Dividing both by 2 gives the simplified fraction 3/5.',
+              hint: 'Reduce 6/10 to its lowest terms.'
+            },
+            {
+              id: 'ws_m3',
+              question: 'Which is greater: 0.75 or 0.705?',
+              options: ['0.75 is greater', '0.705 is greater', 'Both are equal', 'Cannot be determined'],
+              correctIndex: 0,
+              explanation: 'Compare place values: 0.750 has 5 in the hundredths place, whereas 0.705 has 0 in the hundredths place. So 0.75 > 0.705.',
+              hint: 'Add a trailing zero to make both numbers 3 decimal places (0.750 vs 0.705).'
+            },
+            {
+              id: 'ws_m4',
+              question: 'What is 1/2 + 1/4?',
+              options: ['2/6', '3/4', '1/6', '2/4'],
+              correctIndex: 1,
+              explanation: 'Convert 1/2 to 2/4. Then 2/4 + 1/4 = 3/4.',
+              hint: 'Find the common denominator (4).'
+            }
+          ]
+        }),
+        grade: 'Grade 5',
+        subject: 'Mathematics',
+        mediaType: 'WORKSHEET',
+        coverImage: 'https://images.unsplash.com/photo-1596495578065-6e0763fa1178?w=800&auto=format&fit=crop&q=60',
+        readTime: '10 min practice',
+        authorName: 'EduAshram Faculty',
+        views: 230,
+      },
+      {
+        title: 'Nutrition in Plants & Animals Practice Worksheet',
+        description: 'Interactive biology worksheet testing photosynthesis, autotrophs vs heterotrophs, and digestive systems.',
+        content: JSON.stringify({
+          passage: 'Living organisms require food for energy, growth, and repair. Green plants prepare their own food via photosynthesis (autotrophic nutrition).',
+          questions: [
+            {
+              id: 'ws_s1',
+              question: 'Which green pigment in leaves captures solar energy for photosynthesis?',
+              options: ['Chlorophyll', 'Hemoglobin', 'Carotene', 'Anthocyanin'],
+              correctIndex: 0,
+              explanation: 'Chlorophyll is the green pigment located inside chloroplasts that absorbs sunlight energy.',
+              hint: 'It gives leaves their distinctive green colour.'
+            },
+            {
+              id: 'ws_s2',
+              question: 'What are the tiny pores on the surface of leaves through which gas exchange takes place called?',
+              options: ['Xylem', 'Stomata', 'Phloem', 'Stems'],
+              correctIndex: 1,
+              explanation: 'Stomata (guarded by guard cells) regulate the intake of carbon dioxide and release of oxygen.',
+              hint: 'They open and close with guard cells.'
+            },
+            {
+              id: 'ws_s3',
+              question: 'Organisms that cannot make their own food and depend on others are called:',
+              options: ['Autotrophs', 'Producers', 'Heterotrophs', 'Photosynthesizers'],
+              correctIndex: 2,
+              explanation: 'Animals and non-green plants are heterotrophs because they consume other organisms for nutrients.',
+              hint: 'Think: "Hetero" means different / other.'
+            }
+          ]
+        }),
+        grade: 'Grade 7',
+        subject: 'Science',
+        mediaType: 'WORKSHEET',
+        coverImage: 'https://images.unsplash.com/photo-1532094349884-543bc11b234d?w=800&auto=format&fit=crop&q=60',
+        readTime: '8 min practice',
+        authorName: 'EduAshram Faculty',
+        views: 315,
+      },
+      {
+        title: 'Tenses & Parts of Speech Grammar Worksheet',
+        description: 'Test your grammar skills on identifying tenses, prepositions, and pronouns with instant explanations.',
+        content: JSON.stringify({
+          passage: 'Grammar helps us structure sentences accurately. Read each sentence carefully and identify the correct grammatical form.',
+          questions: [
+            {
+              id: 'ws_e1',
+              question: 'Identify the tense in: "She has finished her homework."',
+              options: ['Simple Past Tense', 'Present Continuous Tense', 'Present Perfect Tense', 'Past Perfect Tense'],
+              correctIndex: 2,
+              explanation: '"has / have + past participle (finished)" is the structure of the Present Perfect Tense.',
+              hint: 'Notice the auxiliary verb "has" followed by past participle "finished".'
+            },
+            {
+              id: 'ws_e2',
+              question: 'Choose the correct preposition: "The book is ___ the table."',
+              options: ['on', 'between', 'during', 'among'],
+              correctIndex: 0,
+              explanation: '"on" is used to show a surface contact position (on the table).',
+              hint: 'The book rests on top of the surface.'
+            },
+            {
+              id: 'ws_e3',
+              question: 'What part of speech is the word "quickly" in: "He ran quickly to catch the bus"?',
+              options: ['Adjective', 'Adverb', 'Noun', 'Conjunction'],
+              correctIndex: 1,
+              explanation: '"Quickly" modifies the verb "ran", explaining how he ran. Words describing verbs are adverbs.',
+              hint: 'It describes how an action was performed (often ends in -ly).'
+            }
+          ]
+        }),
+        grade: 'Grade 6',
+        subject: 'English',
+        mediaType: 'WORKSHEET',
+        coverImage: 'https://images.unsplash.com/photo-1456513080510-7bf3a84b82f8?w=800&auto=format&fit=crop&q=60',
+        readTime: '7 min practice',
+        authorName: 'EduAshram Faculty',
+        views: 198,
       },
     ];
 
+    let addedCount = 0;
     for (const item of sampleMaterials) {
-      await (prisma as any).studyMaterial.create({ data: item });
+      const existing = await db.studyMaterial.findFirst({ where: { title: item.title } });
+      if (!existing) {
+        await db.studyMaterial.create({ data: item });
+        addedCount++;
+      }
     }
-    console.log(`Successfully seeded ${sampleMaterials.length} sample study materials!`);
-  }
+    console.log(`Seeding check complete. Added ${addedCount} new study materials / worksheets!`);
 }
 
 main().finally(() => prisma.$disconnect());
