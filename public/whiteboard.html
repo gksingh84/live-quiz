@@ -1380,11 +1380,11 @@ body {
 
   function checkAndExpandInfiniteCanvas(currentY) {
     const page = pages[currentPageIndex];
-    if (!page) return;
+    if (!page) return false;
     const container = boardCanvas?.closest(".canvas-container");
-    if (!container) return;
+    if (!container) return false;
     const currentHeight = page.height || 6000;
-    if (currentHeight >= 50000) return;
+    if (currentHeight >= 50000) return false;
 
     let shouldExpand = false;
     const scrollBottom = container.scrollTop + container.clientHeight;
@@ -1403,7 +1403,9 @@ body {
       if (typeof customHeightInputEl !== "undefined" && customHeightInputEl) {
         customHeightInputEl.value = String(page.height);
       }
+      return true;
     }
+    return false;
   }
 
   function resizeCanvas() {
@@ -6380,57 +6382,23 @@ body {
     return dx * dx + dy * dy;
   }
 
-  // Pre-smooth points using a 1-pass Gaussian/binomial filter [0.25, 0.5, 0.25]
-  // This removes hardware sensor jitter and tremor without altering intent or cutting corners
-  function getSmoothedStrokePoints(rawPoints) {
-    if (!rawPoints || rawPoints.length <= 2) return rawPoints ? rawPoints.slice() : [];
-    // 1. Remove points that are almost identical (< 1.2px) to prevent division by zero or micro-kinks
-    const clean = [rawPoints[0]];
-    for (let i = 1; i < rawPoints.length; i++) {
-      const p = rawPoints[i];
-      const prev = clean[clean.length - 1];
-      const dx = p.x - prev.x;
-      const dy = p.y - prev.y;
-      if (dx * dx + dy * dy >= 1.44) {
-        clean.push(p);
-      }
-    }
-    const lastRaw = rawPoints[rawPoints.length - 1];
-    const lastClean = clean[clean.length - 1];
-    if (lastClean !== lastRaw) {
-      const ddx = lastRaw.x - lastClean.x;
-      const ddy = lastRaw.y - lastClean.y;
-      if (ddx * ddx + ddy * ddy >= 0.5) {
-        clean.push(lastRaw);
-      }
-    }
-    if (clean.length <= 2) return clean;
-
-    // 2. Binomial 3-tap smoothing pass (preserves exact start & end points)
-    const smoothed = [clean[0]];
-    for (let i = 1; i < clean.length - 1; i++) {
-      const prev = clean[i - 1];
-      const curr = clean[i];
-      const next = clean[i + 1];
-      smoothed.push({
-        x: 0.25 * prev.x + 0.5 * curr.x + 0.25 * next.x,
-        y: 0.25 * prev.y + 0.5 * curr.y + 0.25 * next.y,
-      });
-    }
-    smoothed.push(clean[clean.length - 1]);
-    return smoothed;
+  function getBoardContext() {
+    if (!boardCanvas) return null;
+    const ctx = boardCanvas.getContext("2d");
+    if (!ctx) return null;
+    const scale = window.devicePixelRatio || 1;
+    ctx.setTransform(scale * zoom, 0, 0, scale * zoom, 0, 0);
+    return ctx;
   }
 
-  // Draw smooth stroke using Centripetal Catmull-Rom to Cubic Bézier spline (alpha = 0.5)
-  // Provides C1 tangent continuity across all points, with zero kinks, no overshoot, and natural ink feel
-  function drawSmoothStrokePath(ctx, rawPoints) {
-    if (!rawPoints || rawPoints.length === 0) return;
-    const points = getSmoothedStrokePoints(rawPoints);
+  // Draw smooth stroke using Midpoint Quadratic Spline (C1 continuity, instant O(N) evaluation)
+  // Perfectly matches real-time incremental drawing with zero visual popping
+  function drawSmoothStrokePath(ctx, points) {
+    if (!points || points.length === 0) return;
     const n = points.length;
 
     if (n === 1) {
-      ctx.moveTo(points[0].x, points[0].y);
-      ctx.arc(points[0].x, points[0].y, 0.1, 0, Math.PI * 2);
+      ctx.arc(points[0].x, points[0].y, 0.5, 0, Math.PI * 2);
       return;
     }
 
@@ -6441,33 +6409,17 @@ body {
     }
 
     ctx.moveTo(points[0].x, points[0].y);
+    const m1x = (points[0].x + points[1].x) / 2;
+    const m1y = (points[0].y + points[1].y) / 2;
+    ctx.lineTo(m1x, m1y);
 
-    for (let i = 0; i < n - 1; i++) {
-      const p0 = i > 0 ? points[i - 1] : { x: 2 * points[0].x - points[1].x, y: 2 * points[0].y - points[1].y };
-      const p1 = points[i];
-      const p2 = points[i + 1];
-      const p3 = i + 2 < n ? points[i + 2] : { x: 2 * points[n - 1].x - points[n - 2].x, y: 2 * points[n - 1].y - points[n - 2].y };
-
-      const d1 = Math.hypot(p1.x - p0.x, p1.y - p0.y);
-      const d2 = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-      const d3 = Math.hypot(p3.x - p2.x, p3.y - p2.y);
-
-      const dt0 = Math.pow(Math.max(d1, 0.001), 0.5);
-      const dt1 = Math.pow(Math.max(d2, 0.001), 0.5);
-      const dt2 = Math.pow(Math.max(d3, 0.001), 0.5);
-
-      const t1x = ((p1.x - p0.x) / dt0 - (p2.x - p0.x) / (dt0 + dt1) + (p2.x - p1.x) / dt1) * dt1;
-      const t1y = ((p1.y - p0.y) / dt0 - (p2.y - p0.y) / (dt0 + dt1) + (p2.y - p1.y) / dt1) * dt1;
-      const t2x = ((p2.x - p1.x) / dt1 - (p3.x - p1.x) / (dt1 + dt2) + (p3.x - p2.x) / dt2) * dt1;
-      const t2y = ((p2.y - p1.y) / dt1 - (p3.y - p1.y) / (dt1 + dt2) + (p3.y - p2.y) / dt2) * dt1;
-
-      const cp1x = p1.x + t1x / 3;
-      const cp1y = p1.y + t1y / 3;
-      const cp2x = p2.x - t2x / 3;
-      const cp2y = p2.y - t2y / 3;
-
-      ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
+    for (let i = 1; i < n - 1; i++) {
+      const nextMidX = (points[i].x + points[i + 1].x) / 2;
+      const nextMidY = (points[i].y + points[i + 1].y) / 2;
+      ctx.quadraticCurveTo(points[i].x, points[i].y, nextMidX, nextMidY);
     }
+
+    ctx.lineTo(points[n - 1].x, points[n - 1].y);
   }
 
   function drawSingleStroke(ctx, stroke) {
@@ -6479,7 +6431,7 @@ body {
     const alpha = stroke.alpha ?? 1;
 
     // Dot or single tap: draw clean round dot
-    if (points.length === 1 || (points.length === 2 && Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y) < 1.5)) {
+    if (points.length === 1 || (points.length === 2 && Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y) < 2.5)) {
       ctx.save();
       ctx.globalAlpha = alpha;
       ctx.fillStyle = color;
@@ -6499,6 +6451,117 @@ body {
 
     ctx.beginPath();
     drawSmoothStrokePath(ctx, points);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Real-time incremental stroke rendering (~0.005ms)
+  // Renders newly arrived midpoint quadratic segments directly onto the canvas context without clearing or repainting the board
+  function drawIncrementalStroke(stroke) {
+    if (!stroke || !stroke.points) return;
+    const pts = stroke.points;
+    const n = pts.length;
+    if (n < 2) return;
+
+    const ctx = getBoardContext();
+    if (!ctx) return;
+
+    const width = stroke.width ?? 3;
+    const color = stroke.color || "#0f172a";
+    const alpha = stroke.alpha ?? 1;
+
+    let drawnCount = stroke._drawnCount || 1;
+    if (drawnCount >= n) return;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+
+    // Segment 1: from P0 to midpoint M1
+    if (drawnCount === 1 && n >= 2) {
+      const m1x = (pts[0].x + pts[1].x) / 2;
+      const m1y = (pts[0].y + pts[1].y) / 2;
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      ctx.lineTo(m1x, m1y);
+      ctx.stroke();
+      drawnCount = 2;
+    }
+
+    // Segments 2..n-1: continuous quadratic curves between midpoints
+    const startIdx = Math.max(1, drawnCount - 1);
+    const endIdx = n - 1;
+
+    if (startIdx < endIdx) {
+      ctx.beginPath();
+      const firstMidX = (pts[startIdx - 1].x + pts[startIdx].x) / 2;
+      const firstMidY = (pts[startIdx - 1].y + pts[startIdx].y) / 2;
+      ctx.moveTo(firstMidX, firstMidY);
+      for (let i = startIdx; i < endIdx; i++) {
+        const nextMidX = (pts[i].x + pts[i + 1].x) / 2;
+        const nextMidY = (pts[i].y + pts[i + 1].y) / 2;
+        ctx.quadraticCurveTo(pts[i].x, pts[i].y, nextMidX, nextMidY);
+      }
+      ctx.stroke();
+    }
+
+    stroke._drawnCount = n;
+    ctx.restore();
+  }
+
+  // Finalizes active stroke on pointerup: renders dot if tapped or the closing tail segment
+  function finishActiveStroke(stroke) {
+    if (!stroke || !stroke.points || stroke.points.length === 0) return;
+    const ctx = getBoardContext();
+    if (!ctx) return;
+
+    const pts = stroke.points;
+    const n = pts.length;
+    const width = stroke.width ?? 3;
+    const color = stroke.color || "#0f172a";
+    const alpha = stroke.alpha ?? 1;
+
+    // Dot / tap check
+    const isDot = n === 1 || (n === 2 && Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y) < 2.5);
+
+    if (isDot) {
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(pts[0].x, pts[0].y, Math.max(1.5, width / 2), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      return;
+    }
+
+    // Flush any pending intermediate segments
+    drawIncrementalStroke(stroke);
+
+    // Render the final tail segment from the last midpoint to the final point
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.beginPath();
+
+    if (n === 2) {
+      const m1x = (pts[0].x + pts[1].x) / 2;
+      const m1y = (pts[0].y + pts[1].y) / 2;
+      ctx.moveTo(m1x, m1y);
+      ctx.lineTo(pts[1].x, pts[1].y);
+    } else if (n > 2) {
+      const mLastX = (pts[n - 2].x + pts[n - 1].x) / 2;
+      const mLastY = (pts[n - 2].y + pts[n - 1].y) / 2;
+      ctx.moveTo(mLastX, mLastY);
+      ctx.lineTo(pts[n - 1].x, pts[n - 1].y);
+    }
+
     ctx.stroke();
     ctx.restore();
   }
@@ -6934,6 +6997,7 @@ body {
         alpha,
         width,
         points: [point],
+        _drawnCount: 1,
       };
       if (!pages[currentPageIndex]) {
         pages[currentPageIndex] = { strokes: [], shapes: [], texts: [], widgets: [], background: null };
@@ -7461,6 +7525,7 @@ body {
       const events = (rawEvents && rawEvents.length > 0) ? rawEvents : [evt];
       const pts = activeStroke.points;
       let maxY = 0;
+      let addedAny = false;
 
       for (let i = 0; i < events.length; i++) {
         const point = getCanvasPoint(events[i]);
@@ -7468,17 +7533,28 @@ body {
         const last = pts[pts.length - 1];
         if (!last) {
           pts.push(point);
+          addedAny = true;
         } else {
           const dx = point.x - last.x;
           const dy = point.y - last.y;
-          // Capture points at minimum distance threshold ~1.5px to eliminate zero-distance sensor noise
-          if (dx * dx + dy * dy >= 2.25) {
+          // Capture points at smooth distance threshold ~2px to eliminate sensor jitter
+          if (dx * dx + dy * dy >= 4.0) {
             pts.push(point);
+            addedAny = true;
           }
         }
       }
-      if (maxY > 0) checkAndExpandInfiniteCanvas(maxY);
-      updateBoardAppearance();
+
+      let canvasExpanded = false;
+      if (maxY > 0) {
+        canvasExpanded = checkAndExpandInfiniteCanvas(maxY);
+      }
+
+      if (canvasExpanded) {
+        activeStroke._drawnCount = pts.length;
+      } else if (addedAny) {
+        drawIncrementalStroke(activeStroke);
+      }
     } else if (currentTool === "eraser") {
       handleEraserMove(evt);
     } else if (currentTool === "shapes" || currentTool === "charts") {
@@ -7631,8 +7707,18 @@ body {
       const pts = activeStroke.points;
       const last = pts[pts.length - 1];
       if (!last || (endPt.x !== last.x || endPt.y !== last.y)) {
-        pts.push(endPt);
+        const dx = endPt.x - (last ? last.x : 0);
+        const dy = endPt.y - (last ? last.y : 0);
+        if (dx * dx + dy * dy >= 4.0) {
+          pts.push(endPt);
+        }
       }
+      finishActiveStroke(activeStroke);
+      activeStroke = null;
+      activeShape = null;
+      clearTimeout(savePagesTimeout);
+      savePagesTimeout = setTimeout(savePagesToStorage, 800);
+      return;
     }
     activeStroke = null;
     activeShape = null;

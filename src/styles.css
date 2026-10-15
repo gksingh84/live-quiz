@@ -4292,6 +4292,63 @@ button:disabled {
   border-color: #0369a1;
 }
 
+.word-doc-toolbar select {
+  height: 29px;
+  padding: 0 8px;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  transition: all 0.15s ease;
+}
+
+.word-doc-toolbar select:hover,
+.word-doc-toolbar select:focus {
+  border-color: #0284c7;
+  background: #f8fafc;
+  outline: none;
+}
+
+.word-doc-toolbar-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 2px 6px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+
+.word-doc-toolbar-group select {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  padding: 0 2px;
+  height: 25px;
+  font-weight: 500;
+}
+
+.word-doc-toolbar-group select:hover,
+.word-doc-toolbar-group select:focus {
+  background: transparent;
+}
+
+.word-doc-toolbar-divider {
+  display: inline-block;
+  width: 1px;
+  height: 20px;
+  background: #cbd5e1;
+  margin: 0 3px;
+  flex-shrink: 0;
+}
+
 .word-doc-canvas-wrapper {
   flex: 1 1 auto;
   min-height: 0;

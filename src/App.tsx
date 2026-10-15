@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { io, type Socket } from 'socket.io-client';
-import { AppWindow, ArrowLeft, ArrowRight, BarChart3, BookOpen, BookOpenCheck, Calculator, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronUp, CircleHelp, Clock3, Copy, Download, ExternalLink, Eye, FileText, KeyRound, ListChecks, Lock, LogOut, Maximize2, Minimize2, Paperclip, Pencil, PenTool, Plus, Printer, Radio, RefreshCw, RotateCcw, Save, Send, ShieldCheck, Sparkles, Trash2, UploadCloud, UserCheck, Users, UserX, X } from 'lucide-react';
+import { AppWindow, ArrowLeft, ArrowRight, BarChart3, BookOpen, BookOpenCheck, Calculator, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronUp, CircleHelp, Clock3, Copy, Download, ExternalLink, Eye, FileText, KeyRound, ListChecks, Lock, LogOut, Maximize2, Minimize2, Paperclip, Pencil, PenTool, Plus, Printer, Radio, RefreshCw, RotateCcw, Save, Send, ShieldCheck, Sparkles, Trash2, Type, UploadCloud, UserCheck, Users, UserX, X } from 'lucide-react';
 import { PublicPortal } from './components/PublicPortal';
 import { AuthModal, type AuthMode } from './components/AuthModal';
 import { SuperAdminConsole } from './components/SuperAdminConsole';
@@ -2941,15 +2941,15 @@ function WorksheetsPanel({ setNotice, onNavigateToAISettings }: { setNotice: (ms
             onClick={() =>
               setEditingPaper({
                 title: 'New Question Paper',
-                subject: 'General Science',
-                grade: 'Grade 6',
+                subject: 'Science',
+                grade: 'Grade-6',
                 totalMarks: 100,
                 status: 'DRAFT',
                 content: `
 <div style="font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.5; color: #1e293b; width: 100%;">
   <div style="text-align: center; border-bottom: 2px solid #0f172a; padding-bottom: 10px; margin-bottom: 14px;">
     <h1 style="margin: 0; font-size: 22px; text-transform: uppercase; color: #0f172a; letter-spacing: 0.5px;">SCIENCE WORKSHEET PAPER</h1>
-    <h3 style="margin: 4px 0 0 0; color: #475569; font-weight: 500; font-size: 15px;">Grade 6 &nbsp;|&nbsp; Subject: General Science</h3>
+    <h3 style="margin: 4px 0 0 0; color: #475569; font-weight: 500; font-size: 15px;">Grade-6 &nbsp;|&nbsp; Subject: Science</h3>
     <div style="display: flex; justify-content: space-between; margin-top: 10px; font-weight: 600; font-size: 13px; color: #334155;">
       <span>Time Allowed: 60 Mins</span>
       <span>Total Marks: 100</span>
@@ -3139,6 +3139,70 @@ function WorksheetsPanel({ setNotice, onNavigateToAISettings }: { setNotice: (ms
   );
 }
 
+const WORKSHEET_SUBJECTS = [
+  'Mathematics',
+  'Science',
+  'General Science',
+  'Physics',
+  'Chemistry',
+  'Biology',
+  'Social Science (SST)',
+  'History',
+  'Geography',
+  'Civics / Political Science',
+  'Economics',
+  'English',
+  'English Grammar & Literature',
+  'Hindi',
+  'Sanskrit',
+  'Computer Science',
+  'Information Technology (IT)',
+  'Environmental Studies (EVS)',
+  'General Knowledge (GK)',
+  'Moral Science & Ethics',
+  'Other / Custom Subject',
+];
+
+const WORKSHEET_GRADES = [
+  'Grade-4',
+  'Grade-5',
+  'Grade-6',
+  'Grade-7',
+  'Grade-8',
+  'Grade-9',
+  'Grade-10',
+  'Other / Custom Grade',
+];
+
+const FONT_FAMILY_OPTIONS = [
+  { label: 'Arial (Default)', value: 'Arial, sans-serif' },
+  { label: 'Times New Roman', value: '"Times New Roman", Times, serif' },
+  { label: 'Georgia', value: 'Georgia, serif' },
+  { label: 'Calibri', value: 'Calibri, sans-serif' },
+  { label: 'Garamond', value: 'Garamond, serif' },
+  { label: 'Plus Jakarta Sans', value: '"Plus Jakarta Sans", sans-serif' },
+  { label: 'Inter', value: 'Inter, sans-serif' },
+  { label: 'Verdana', value: 'Verdana, sans-serif' },
+  { label: 'Trebuchet MS', value: '"Trebuchet MS", sans-serif' },
+  { label: 'Courier New (Mono)', value: '"Courier New", Courier, monospace' },
+  { label: 'Comic Sans MS', value: '"Comic Sans MS", cursive, sans-serif' },
+];
+
+const FONT_SIZE_OPTIONS = [
+  { label: '12px (Small)', value: '12px' },
+  { label: '14px (Compact)', value: '14px' },
+  { label: '16px (Normal)', value: '16px' },
+  { label: '18px (Medium)', value: '18px' },
+  { label: '20px (Large)', value: '20px' },
+  { label: '24px (Subhead)', value: '24px' },
+  { label: '28px (H2 Section)', value: '28px' },
+  { label: '32px (H1 Title)', value: '32px' },
+  { label: '36px (Big Title)', value: '36px' },
+  { label: '42px (Jumbo)', value: '42px' },
+];
+
+const FONT_SIZE_STEPS = ['12px', '14px', '16px', '18px', '20px', '24px', '28px', '32px', '36px', '42px'];
+
 function WordDocEditorModal({
   paper,
   onClose,
@@ -3149,8 +3213,33 @@ function WordDocEditorModal({
   onSave: (paper: Partial<WorksheetPaper>) => void;
 }) {
   const [title, setTitle] = useState(paper.title || 'New Question Paper');
-  const [subject, setSubject] = useState(paper.subject || 'Science');
-  const [grade, setGrade] = useState(paper.grade || 'Grade 6');
+
+  const isPredefinedSubject = WORKSHEET_SUBJECTS.includes(paper.subject || '') && paper.subject !== 'Other / Custom Subject';
+  const [subjectOption, setSubjectOption] = useState<string>(() => {
+    if (!paper.subject) return 'Science';
+    return isPredefinedSubject ? paper.subject : 'Other / Custom Subject';
+  });
+  const [customSubject, setCustomSubject] = useState<string>(() => {
+    return isPredefinedSubject ? '' : (paper.subject || '');
+  });
+
+  const normalizeGradeVal = (g?: string | null) => {
+    if (!g) return 'Grade-6';
+    const match = g.match(/Grade[- ]?(\d+)/i);
+    if (match) return `Grade-${match[1]}`;
+    return g;
+  };
+
+  const initialGradeNormalized = normalizeGradeVal(paper.grade);
+  const isPredefinedGrade = WORKSHEET_GRADES.includes(initialGradeNormalized) && initialGradeNormalized !== 'Other / Custom Grade';
+  const [gradeOption, setGradeOption] = useState<string>(() => {
+    if (!paper.grade) return 'Grade-6';
+    return isPredefinedGrade ? initialGradeNormalized : 'Other / Custom Grade';
+  });
+  const [customGrade, setCustomGrade] = useState<string>(() => {
+    return isPredefinedGrade ? '' : (paper.grade || '');
+  });
+
   const [totalMarks, setTotalMarks] = useState(paper.totalMarks || 100);
   const [status, setStatus] = useState<'DRAFT' | 'PUBLISHED'>(paper.status === 'DRAFT' ? 'DRAFT' : 'PUBLISHED');
   const [selectedImg, setSelectedImg] = useState<HTMLImageElement | null>(null);
@@ -3158,8 +3247,83 @@ function WordDocEditorModal({
   const [imgHeight, setImgHeight] = useState<string>('auto');
   const [imgAlign, setImgAlign] = useState<'left' | 'center' | 'right'>('center');
 
+  const [currentFontFamily, setCurrentFontFamily] = useState('Arial, sans-serif');
+  const [currentFontSize, setCurrentFontSize] = useState('16px');
+
   const canvasRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const savedRangeRef = useRef<Range | null>(null);
+
+  const saveSelection = () => {
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0 && canvasRef.current) {
+      const range = sel.getRangeAt(0);
+      if (canvasRef.current.contains(range.commonAncestorContainer)) {
+        savedRangeRef.current = range.cloneRange();
+      }
+    }
+  };
+
+  const restoreSelection = () => {
+    if (canvasRef.current) {
+      canvasRef.current.focus();
+      if (savedRangeRef.current) {
+        const sel = window.getSelection();
+        if (sel) {
+          sel.removeAllRanges();
+          sel.addRange(savedRangeRef.current);
+        }
+      }
+    }
+  };
+
+  const applyFontFamily = (fontVal: string) => {
+    setCurrentFontFamily(fontVal);
+    if (!canvasRef.current) return;
+    restoreSelection();
+    try {
+      document.execCommand('styleWithCSS', false, 'true');
+      document.execCommand('fontName', false, fontVal);
+    } catch {
+      // fallback
+    }
+    saveSelection();
+  };
+
+  const applyFontSize = (sizeVal: string) => {
+    setCurrentFontSize(sizeVal);
+    if (!canvasRef.current) return;
+    restoreSelection();
+    try {
+      document.execCommand('styleWithCSS', false, 'false');
+      document.execCommand('fontSize', false, '7');
+      const targets = canvasRef.current.querySelectorAll('font[size="7"], [style*="-webkit-xxx-large"]');
+      targets.forEach((node) => {
+        const el = node as HTMLElement;
+        el.removeAttribute('size');
+        el.style.fontSize = sizeVal;
+        if (el.tagName.toLowerCase() === 'font') {
+          const span = document.createElement('span');
+          span.style.fontSize = sizeVal;
+          while (el.firstChild) {
+            span.appendChild(el.firstChild);
+          }
+          el.parentNode?.replaceChild(span, el);
+        }
+      });
+    } catch {
+      // fallback
+    }
+    saveSelection();
+  };
+
+  const stepFontSize = (delta: number) => {
+    const idx = FONT_SIZE_STEPS.indexOf(currentFontSize);
+    let nextIdx = idx >= 0 ? idx + delta : (delta > 0 ? 3 : 1);
+    if (nextIdx < 0) nextIdx = 0;
+    if (nextIdx >= FONT_SIZE_STEPS.length) nextIdx = FONT_SIZE_STEPS.length - 1;
+    applyFontSize(FONT_SIZE_STEPS[nextIdx]);
+  };
 
   const applyImageStyle = (w: string, h: string, align: 'left' | 'center' | 'right') => {
     if (!selectedImg) return;
@@ -3290,11 +3454,18 @@ function WordDocEditorModal({
   function handleSave(targetStatus?: 'DRAFT' | 'PUBLISHED') {
     const finalStatus = targetStatus || status;
     const htmlContent = canvasRef.current?.innerHTML || paper.content || '';
+    const finalSubject = subjectOption === 'Other / Custom Subject'
+      ? (customSubject.trim() || 'General')
+      : subjectOption;
+    const finalGrade = gradeOption === 'Other / Custom Grade'
+      ? (customGrade.trim() || 'General')
+      : gradeOption;
+
     onSave({
       ...paper,
       title,
-      subject,
-      grade,
+      subject: finalSubject,
+      grade: finalGrade,
       totalMarks: Number(totalMarks),
       status: finalStatus,
       content: htmlContent,
@@ -3339,12 +3510,54 @@ function WordDocEditorModal({
             </label>
             <label className="field compact-field">
               <span>Subject</span>
-              <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="e.g. Science" />
+              <select
+                value={subjectOption}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setSubjectOption(val);
+                }}
+              >
+                {WORKSHEET_SUBJECTS.map((subj) => (
+                  <option key={subj} value={subj}>{subj}</option>
+                ))}
+              </select>
             </label>
+            {subjectOption === 'Other / Custom Subject' && (
+              <label className="field compact-field">
+                <span>Custom Subject Name</span>
+                <input
+                  value={customSubject}
+                  onChange={(e) => setCustomSubject(e.target.value)}
+                  placeholder="e.g. French, Robotics"
+                  required
+                />
+              </label>
+            )}
             <label className="field compact-field">
               <span>Grade / Class</span>
-              <input value={grade} onChange={(e) => setGrade(e.target.value)} placeholder="e.g. Grade 6" />
+              <select
+                value={gradeOption}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setGradeOption(val);
+                }}
+              >
+                {WORKSHEET_GRADES.map((g) => (
+                  <option key={g} value={g}>{g}</option>
+                ))}
+              </select>
             </label>
+            {gradeOption === 'Other / Custom Grade' && (
+              <label className="field compact-field">
+                <span>Custom Grade Name</span>
+                <input
+                  value={customGrade}
+                  onChange={(e) => setCustomGrade(e.target.value)}
+                  placeholder="e.g. Class 10 - Batch A"
+                  required
+                />
+              </label>
+            )}
             <label className="field compact-field">
               <span>Total Marks</span>
               <input type="number" value={totalMarks} onChange={(e) => setTotalMarks(Number(e.target.value))} />
@@ -3360,15 +3573,82 @@ function WordDocEditorModal({
         </div>
 
         <div className="word-doc-toolbar">
+          {/* Font Family Selector */}
+          <div className="word-doc-toolbar-group" title="Text Font Style">
+            <Type size={14} color="#64748b" />
+            <select
+              value={currentFontFamily}
+              onChange={(e) => applyFontFamily(e.target.value)}
+              onMouseDown={saveSelection}
+              aria-label="Font Style"
+            >
+              {FONT_FAMILY_OPTIONS.map((f) => (
+                <option key={f.value} value={f.value} style={{ fontFamily: f.value }}>
+                  {f.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Font Size Selector & Step Buttons */}
+          <div className="word-doc-toolbar-group" title="Text Size">
+            <span style={{ fontSize: '11px', fontWeight: 700, color: '#64748b' }}>Size</span>
+            <select
+              value={currentFontSize}
+              onChange={(e) => applyFontSize(e.target.value)}
+              onMouseDown={saveSelection}
+              aria-label="Font Size"
+            >
+              {FONT_SIZE_OPTIONS.map((s) => (
+                <option key={s.value} value={s.value}>
+                  {s.label}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              title="Decrease Font Size"
+              style={{ padding: '3px 6px', fontSize: '11px' }}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                stepFontSize(-1);
+              }}
+            >
+              A-
+            </button>
+            <button
+              type="button"
+              title="Increase Font Size"
+              style={{ padding: '3px 6px', fontSize: '11px' }}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                stepFontSize(1);
+              }}
+            >
+              A+
+            </button>
+          </div>
+
+          <div className="word-doc-toolbar-divider" />
+
+          {/* Text Style Commands */}
           <button type="button" title="Bold" onMouseDown={(e) => execCmd(e, 'bold')}><b>B</b> Bold</button>
           <button type="button" title="Italic" onMouseDown={(e) => execCmd(e, 'italic')}><i>I</i> Italic</button>
           <button type="button" title="Underline" onMouseDown={(e) => execCmd(e, 'underline')}><u>U</u> Underline</button>
+
+          <div className="word-doc-toolbar-divider" />
+
+          {/* Headings & Structure */}
           <button type="button" title="H1 Title" onMouseDown={(e) => execCmd(e, 'formatBlock', '<h1>')}>H1 Title</button>
           <button type="button" title="H2 Section" onMouseDown={(e) => execCmd(e, 'formatBlock', '<h2>')}>H2 Section</button>
           <button type="button" title="H3 Subhead" onMouseDown={(e) => execCmd(e, 'formatBlock', '<h3>')}>H3 Subhead</button>
           <button type="button" title="Bullet List" onMouseDown={(e) => execCmd(e, 'insertUnorderedList')}>• Bullet List</button>
           <button type="button" title="Numbered List" onMouseDown={(e) => execCmd(e, 'insertOrderedList')}>1. Numbered</button>
           <button type="button" title="Line Divider" onMouseDown={(e) => execCmd(e, 'insertHorizontalRule')}>― Line Divider</button>
+
+          <div className="word-doc-toolbar-divider" />
+
+          {/* Image Upload & Extras */}
           <button
             type="button"
             title="Upload Image from Local System"
@@ -3528,6 +3808,9 @@ function WordDocEditorModal({
             contentEditable
             suppressContentEditableWarning
             onClick={handleCanvasClick}
+            onMouseUp={saveSelection}
+            onKeyUp={saveSelection}
+            onSelect={saveSelection}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 const sel = window.getSelection();
@@ -3556,42 +3839,10 @@ function WordDocEditorModal({
   );
 }
 
-const WORKSHEET_SUBJECTS = [
-  'Science',
-  'General Science',
-  'Physics',
-  'Chemistry',
-  'Biology',
-  'Mathematics',
-  'Algebra',
-  'Geometry',
-  'Trigonometry',
-  'English',
-  'English Grammar & Literature',
-  'Social Studies (SST)',
-  'History',
-  'Geography',
-  'Civics / Political Science',
-  'Economics',
-  'Computer Science',
-  'Information Technology (IT)',
-  'Coding & AI',
-  'Environmental Studies (EVS)',
-  'Hindi',
-  'Sanskrit',
-  'Accountancy / Commerce',
-  'Business Studies',
-  'General Knowledge (GK)',
-  'Moral Science & Ethics',
-  'Physical Education',
-  'Art & Design',
-  'Other / Custom Subject',
-];
-
 function AIWorksheetModal({ onClose, onGenerated, onNavigateToAISettings }: { onClose: () => void; onGenerated: () => void; onNavigateToAISettings?: () => void }) {
   const [selectedSubject, setSelectedSubject] = useState('Science');
   const [customSubject, setCustomSubject] = useState('');
-  const [grade, setGrade] = useState('Grade 6');
+  const [grade, setGrade] = useState('Grade-6');
   const [topic, setTopic] = useState('');
   const [subtopics, setSubtopics] = useState('');
   const [questionCount, setQuestionCount] = useState(10);
@@ -3683,7 +3934,7 @@ function AIWorksheetModal({ onClose, onGenerated, onNavigateToAISettings }: { on
         <label className="field compact-field">
           <span>Grade / Class</span>
           <select value={grade} onChange={(e) => setGrade(e.target.value)}>
-            {Array.from({ length: 12 }, (_, i) => `Grade ${i + 1}`).map((g) => (
+            {WORKSHEET_GRADES.map((g) => (
               <option key={g} value={g}>{g}</option>
             ))}
           </select>
