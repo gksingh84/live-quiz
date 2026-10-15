@@ -142,6 +142,7 @@ export function AuthModal({ mode: propMode, initialMode, onClose, onSuccess, onS
       }
 
       setSuccessMsg(data.message || 'Teacher registration submitted successfully! Your account will be activated once approved by the EduAshram Administrator.');
+      localStorage.removeItem('livequiz_ai_key');
       setName('');
       setSignupEmail('');
       setSignupPassword('');
@@ -160,7 +161,7 @@ export function AuthModal({ mode: propMode, initialMode, onClose, onSuccess, onS
   // ==========================================
   if (activeMode === 'student') {
     return (
-      <div className="word-doc-modal-overlay auth-modal-overlay" onClick={onClose}>
+      <div className="word-doc-modal-overlay auth-modal-overlay">
         <div className="auth-modal-card auth-card-student" style={{ maxWidth: '440px' }} onClick={(e) => e.stopPropagation()}>
           <button className="icon-button quiet modal-close-btn" onClick={onClose} aria-label="Close modal">
             <X size={18} />
@@ -222,7 +223,7 @@ export function AuthModal({ mode: propMode, initialMode, onClose, onSuccess, onS
   // ==========================================
   if (activeMode === 'teacher_login' || activeMode === 'admin') {
     return (
-      <div className="word-doc-modal-overlay auth-modal-overlay" onClick={onClose}>
+      <div className="word-doc-modal-overlay auth-modal-overlay">
         <div className="auth-modal-card auth-card-teacher" style={{ maxWidth: '460px' }} onClick={(e) => e.stopPropagation()}>
           <button className="icon-button quiet modal-close-btn" onClick={onClose} aria-label="Close modal">
             <X size={18} />
@@ -304,7 +305,7 @@ export function AuthModal({ mode: propMode, initialMode, onClose, onSuccess, onS
   // 3. DEDICATED TEACHER SIGN UP CARD
   // ==========================================
   return (
-    <div className="word-doc-modal-overlay auth-modal-overlay" onClick={onClose}>
+    <div className="word-doc-modal-overlay auth-modal-overlay">
       <div className="auth-modal-card auth-card-signup" style={{ maxWidth: '540px' }} onClick={(e) => e.stopPropagation()}>
         <button className="icon-button quiet modal-close-btn" onClick={onClose} aria-label="Close modal">
           <X size={18} />

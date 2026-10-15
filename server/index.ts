@@ -346,7 +346,7 @@ app.post('/api/auth/teacher/login', async (req: Request, res: Response) => {
 app.post('/api/auth/admin', async (req: Request, res: Response) => {
   try {
     const data = parse(z.object({ email: z.string().email(), password: z.string().min(1).max(200) }), req.body);
-    
+
     // Check Teacher account first
     const teacher = await db.teacher.findUnique({ where: { email: data.email.toLowerCase() } });
     if (teacher && (await bcrypt.compare(data.password, teacher.passwordHash))) {
@@ -369,10 +369,16 @@ app.post('/api/auth/student', async (req: Request, res: Response) => {
   try {
     const data = parse(z.object({ passkey: z.string().trim().min(4).max(40) }), req.body);
     const lookupHash = passkeyLookup(data.passkey);
-    let student = await prisma.student.findUnique({ where: { passkeyLookup: lookupHash } });
+    let student = await (prisma.student as any).findUnique({
+      where: { passkeyLookup: lookupHash },
+      include: { teacher: { select: { id: true, name: true } } }
+    });
 
     if (!student) {
-      const activeStudents = await prisma.student.findMany({ where: { active: true } });
+      const activeStudents = await (prisma.student as any).findMany({
+        where: { active: true },
+        include: { teacher: { select: { id: true, name: true } } }
+      });
       for (const s of activeStudents) {
         if (await bcrypt.compare(data.passkey.toUpperCase(), s.passkeyHash)) {
           student = s;
@@ -386,8 +392,23 @@ app.post('/api/auth/student', async (req: Request, res: Response) => {
       return res.status(401).json({ error: 'That passkey was not recognized.' });
     }
 
+    let teacherName: string | null = student.teacher?.name || null;
+    if (!teacherName && student.teacherId) {
+      const t = await (prisma.teacher as any).findUnique({ where: { id: student.teacherId }, select: { name: true } });
+      if (t?.name) teacherName = t.name;
+    }
+
     sendSession(res, { id: student.id, role: 'student', name: student.name });
-    res.json({ user: { id: student.id, role: 'student', name: student.name, teacherId: (student as any).teacherId, grade: (student as any).grade || 'Grade 6' } });
+    res.json({
+      user: {
+        id: student.id,
+        role: 'student',
+        name: student.name,
+        teacherId: student.teacherId,
+        teacherName: teacherName || null,
+        grade: student.grade || 'Grade 6'
+      }
+    });
   } catch (error) { errorResponse(res, error); }
 });
 
@@ -420,9 +441,33 @@ app.get('/api/auth/me', authenticate(), async (req: AuthRequest, res: Response) 
     return res.json({ user: admin ? { id: admin.id, role: 'teacher', email: admin.email, name: 'Teacher' } : null });
   }
 
-  const student: any = await (prisma as any).student.findUnique({ where: { id: req.session!.id }, select: { id: true, name: true, active: true, teacherId: true, grade: true } });
+  const student: any = await (prisma as any).student.findUnique({
+    where: { id: req.session!.id },
+    select: {
+      id: true,
+      name: true,
+      active: true,
+      teacherId: true,
+      grade: true,
+      teacher: { select: { id: true, name: true } }
+    }
+  });
   if (!student?.active) return res.status(401).json({ error: 'This student passkey has been disabled.' });
-  return res.json({ user: { id: student.id, role: 'student', name: student.name, teacherId: student.teacherId, grade: student.grade || 'Grade 6' } });
+  let teacherName: string | null = student.teacher?.name || null;
+  if (!teacherName && student.teacherId) {
+    const t = await (prisma.teacher as any).findUnique({ where: { id: student.teacherId }, select: { name: true } });
+    if (t?.name) teacherName = t.name;
+  }
+  return res.json({
+    user: {
+      id: student.id,
+      role: 'student',
+      name: student.name,
+      teacherId: student.teacherId,
+      teacherName: teacherName || null,
+      grade: student.grade || 'Grade 6'
+    }
+  });
 });
 
 // Teacher Profile & API Key Management
@@ -436,7 +481,8 @@ app.get('/api/teacher/profile', teacherOnly, async (req: AuthRequest, res: Respo
     res.json({
       teacher: {
         ...teacher,
-        apiKey: teacher.apiKey ? '••••••••' + teacher.apiKey.slice(-4) : '',
+        apiKey: teacher.apiKey || '',
+        maskedApiKey: teacher.apiKey ? '••••••••' + teacher.apiKey.slice(-4) : '',
         hasApiKey: Boolean(teacher.apiKey),
       }
     });
@@ -446,11 +492,47 @@ app.get('/api/teacher/profile', teacherOnly, async (req: AuthRequest, res: Respo
 app.patch('/api/teacher/api-key', teacherOnly, async (req: AuthRequest, res: Response) => {
   try {
     const { apiKey } = parse(z.object({ apiKey: z.string().trim().max(500) }), req.body);
+    const cleanKey = apiKey ? apiKey.trim() : null;
+
+    if (cleanKey) {
+      // 1. Strictly enforce no duplication across teachers: check if another teacher already has this API key
+      const duplicate = await db.teacher.findFirst({
+        where: {
+          apiKey: cleanKey,
+          id: { not: req.session!.id },
+        },
+        select: { id: true, name: true, email: true },
+      });
+
+      if (duplicate) {
+        return res.status(409).json({
+          error: 'This API Key is already registered to another teacher account. Every teacher must add their own unique API key — duplication of API keys is strictly prohibited.',
+        });
+      }
+
+      // 2. Prevent using system platform administrator keys
+      if (process.env.GEMINI_API_KEY && cleanKey === process.env.GEMINI_API_KEY.trim()) {
+        return res.status(400).json({
+          error: 'This API Key is reserved for the system administrator. Every teacher must use their own personal API key.',
+        });
+      }
+      if (process.env.OPENAI_API_KEY && cleanKey === process.env.OPENAI_API_KEY.trim()) {
+        return res.status(400).json({
+          error: 'This API Key is reserved for the system administrator. Every teacher must use their own personal API key.',
+        });
+      }
+    }
+
     await db.teacher.update({
       where: { id: req.session!.id },
-      data: { apiKey: apiKey || null },
+      data: { apiKey: cleanKey },
     });
-    res.json({ ok: true, message: 'Your personal AI API Key has been saved successfully!' });
+
+    res.json({
+      ok: true,
+      hasApiKey: Boolean(cleanKey),
+      message: cleanKey ? 'Your personal AI API Key has been saved successfully!' : 'Your personal AI API Key has been removed.',
+    });
   } catch (error) { errorResponse(res, error); }
 });
 
@@ -878,9 +960,9 @@ The attached files are your PRIMARY SOURCE OF KNOWLEDGE. You must:
    - Do NOT concentrate all questions on just one page or the opening paragraph. Every section/topic from the uploaded material must be assessed.
 3. **Strict Content Boundary**:
    ${isStrict
-     ? '• STRICT MODE IS ACTIVE: All questions, correct answers, and options MUST be grounded exclusively in the concepts, laws, terms, and phenomena present in the uploaded material. DO NOT introduce topics from unattached chapters or external unmentioned syllabi.'
-     : '• REFERENCE MODE: Use the uploaded pages as the central anchor of truth, while leveraging curriculum context to create polished, age-appropriate questions for Grade ' + data.grade + '.'
-   }
+      ? '• STRICT MODE IS ACTIVE: All questions, correct answers, and options MUST be grounded exclusively in the concepts, laws, terms, and phenomena present in the uploaded material. DO NOT introduce topics from unattached chapters or external unmentioned syllabi.'
+      : '• REFERENCE MODE: Use the uploaded pages as the central anchor of truth, while leveraging curriculum context to create polished, age-appropriate questions for Grade ' + data.grade + '.'
+    }
 
 ---
 
@@ -1491,12 +1573,38 @@ async function generateAIQuiz(data: z.infer<typeof aiQuizInput>) {
 app.post('/api/ai/generate-quiz', adminOnly, async (req: AuthRequest, res: Response) => {
   try {
     const data = parse(aiQuizInput, req.body);
+
+    // If client provided an inline key, ensure it does not belong to another teacher
+    if (data.apiKey && req.session?.id && req.session.role !== 'superadmin') {
+      const duplicate = await db.teacher.findFirst({
+        where: {
+          apiKey: data.apiKey.trim(),
+          id: { not: req.session.id },
+        },
+        select: { id: true },
+      });
+      if (duplicate) {
+        return res.status(403).json({
+          error: 'This API Key is registered to another teacher account. Duplication of API keys is strictly prohibited. Please configure your own unique API key in AI Settings.',
+        });
+      }
+    }
+
+    // Load teacher's own saved apiKey from database if not supplied
     if (!data.apiKey && req.session?.id) {
       const teacher = await db.teacher.findUnique({ where: { id: req.session.id }, select: { apiKey: true } });
       if (teacher?.apiKey) {
         data.apiKey = teacher.apiKey;
       }
     }
+
+    // Require each teacher to have their own API key configured
+    if (!data.apiKey && req.session?.role !== 'superadmin') {
+      return res.status(400).json({
+        error: 'API Key missing. Every teacher must add their own unique Gemini or OpenAI API Key in AI Settings before generating quizzes.',
+      });
+    }
+
     const quizResult = await generateAIQuiz(data);
     res.json(quizResult);
   } catch (error) { errorResponse(res, error); }
@@ -2134,11 +2242,35 @@ app.post('/api/worksheets/ai-generate', adminOnly, async (req: AuthRequest, res:
     });
     const data = parse(schema, req.body);
 
+    // If client provided an inline key, ensure it does not belong to another teacher
+    if (data.apiKey && req.session?.id && req.session.role !== 'superadmin') {
+      const duplicate = await db.teacher.findFirst({
+        where: {
+          apiKey: data.apiKey.trim(),
+          id: { not: req.session.id },
+        },
+        select: { id: true },
+      });
+      if (duplicate) {
+        return res.status(403).json({
+          error: 'This API Key is registered to another teacher account. Duplication of API keys is strictly prohibited. Please configure your own unique API key in AI Settings.',
+        });
+      }
+    }
+
+    // Load teacher's own saved apiKey from database if not supplied
     if (!data.apiKey && req.session?.id) {
       const teacher = await db.teacher.findUnique({ where: { id: req.session.id }, select: { apiKey: true } });
       if (teacher?.apiKey) {
         data.apiKey = teacher.apiKey;
       }
+    }
+
+    // Require each teacher to have their own API key configured
+    if (!data.apiKey && req.session?.role !== 'superadmin') {
+      return res.status(400).json({
+        error: 'API Key missing. Every teacher must add their own unique Gemini or OpenAI API Key in AI Settings before generating question papers.',
+      });
     }
 
     let docHtml = '';

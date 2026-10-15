@@ -13,7 +13,7 @@ type Option = { id?: string; text: string; isCorrect?: boolean; correct?: boolea
 type Question = { id?: string; prompt: string; marks: number; imageUrl?: string | null; type?: QuestionType; options: Option[] };
 type Quiz = { id: string; title: string; grade?: string | null; mode: Mode; status: Status; timeLimitSeconds: number | null; showResults: boolean; currentQuestionIndex: number; currentAnswerRevealed: boolean; questions?: Question[]; _count?: { questions: number; attempts: number } };
 type Student = { id: string; name: string; grade?: string | null; passkey?: string | null; active: boolean; _count: { attempts: number } };
-type User = { id?: string; role: 'admin' | 'teacher' | 'superadmin' | 'student'; name?: string; email?: string; username?: string; hasApiKey?: boolean; grade?: string | null };
+type User = { id?: string; role: 'admin' | 'teacher' | 'superadmin' | 'student'; name?: string; email?: string; username?: string; hasApiKey?: boolean; grade?: string | null; teacherId?: string | null; teacherName?: string | null };
 type QuizDraft = { title: string; grade?: string; mode: Mode; hasTimer: boolean; minutes: number; showResults: boolean; questions: Question[] };
 const ALL_STUDENT_GRADES = ['Grade 1', 'Grade 2', 'Grade 3', 'Grade 4', 'Grade 5', 'Grade 6', 'Grade 7', 'Grade 8', 'Grade 9', 'Grade 10', 'Grade 11', 'Grade 12'];
 const newDraft = (): QuizDraft => ({ title: '', grade: 'All Grades', mode: 'LIVE', hasTimer: false, minutes: 20, showResults: true, questions: [emptyQuestion()] });
@@ -155,9 +155,12 @@ function App() {
     localStorage.removeItem('maths_mentor_view');
     localStorage.removeItem('teacher_active_tab');
     localStorage.removeItem('student_active_tab');
+    localStorage.removeItem('livequiz_ai_key');
+    localStorage.removeItem('livequiz_ai_provider');
   }
 
   useEffect(() => {
+    localStorage.removeItem('livequiz_ai_key');
     if (window.location.search.includes('logout')) {
       void signOut().finally(() => {
         window.history.replaceState({}, '', window.location.pathname);
@@ -245,6 +248,7 @@ function App() {
               else if (nextMode === 'student') window.history.replaceState({}, '', '/student');
             }}
             onSuccess={(u) => {
+              localStorage.removeItem('livequiz_ai_key');
               setUser(u);
               setLoginModal(null);
               window.history.replaceState({}, '', '/');
@@ -552,48 +556,60 @@ function TeacherApp({ user, onSignOut, notice, setNotice, onViewPortal }: { user
         {tab === 'whiteboard' && <TeacherWhiteboard setNotice={setNotice} />}
         {tab === 'students' && <StudentManager students={students} refresh={refresh} setNotice={setNotice} onBackToClassroom={() => setTab('overview')} />}
         {tab === 'results' && <ResultsPanel quizzes={quizzes} selectedQuiz={selectedQuiz} setSelectedQuiz={setSelectedQuiz} results={results} distribution={distribution} onExport={exportCsv} onResetAttempt={handleResetAttempt} />}
-        {tab === 'ai_settings' && <AISettingsPanel setNotice={setNotice} />}
+        {tab === 'ai_settings' && <AISettingsPanel setNotice={setNotice} user={user} />}
       </div>
       {notice && <div className="toast" role="status"><CheckCircle2 size={17} />{notice}<button onClick={() => setNotice('')} aria-label="Dismiss"><X size={14} /></button></div>}
     </main>
   </div>;
 }
 
-function AISettingsPanel({ setNotice }: { setNotice: (msg: string) => void }) {
+function AISettingsPanel({ setNotice, user }: { setNotice: (msg: string) => void; user?: User }) {
   const [provider, setProvider] = useState(() => localStorage.getItem('livequiz_ai_provider') || 'auto');
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem('livequiz_ai_key') || '');
+  const [apiKey, setApiKey] = useState('');
   const [showKey, setShowKey] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [keyError, setKeyError] = useState('');
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    localStorage.removeItem('livequiz_ai_key');
     fetch('/api/teacher/profile', { credentials: 'same-origin' })
       .then((r) => r.json())
       .then((d) => {
-        if (d.teacher?.apiKey && !apiKey) {
-          setApiKey(d.teacher.apiKey);
+        if (d.teacher) {
+          setApiKey(d.teacher.apiKey || '');
+          if (user) user.hasApiKey = Boolean(d.teacher.apiKey);
         }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, []);
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
+    setKeyError('');
     localStorage.setItem('livequiz_ai_provider', provider);
-    localStorage.setItem('livequiz_ai_key', apiKey.trim());
+    localStorage.removeItem('livequiz_ai_key');
+
     try {
-      await fetch('/api/teacher/api-key', {
+      const res = await fetch('/api/teacher/api-key', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
         body: JSON.stringify({ apiKey: apiKey.trim() }),
       });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to save API key.');
+      }
       setSaved(true);
-      setNotice('✓ Personal AI API Key saved to your teacher profile and browser.');
+      if (user) user.hasApiKey = Boolean(apiKey.trim());
+      setNotice(apiKey.trim() ? '✓ Personal AI API Key saved to your teacher profile.' : '✓ Personal AI API Key removed.');
       setTimeout(() => setSaved(false), 3500);
-    } catch {
-      setNotice('✓ Saved to browser local storage.');
+    } catch (err) {
+      setKeyError(err instanceof Error ? err.message : 'Unable to save API key.');
     } finally {
       setSaving(false);
     }
@@ -605,7 +621,7 @@ function AISettingsPanel({ setNotice }: { setNotice: (msg: string) => void }) {
         <div>
           <span className="overline">System Configuration</span>
           <h1>AI Settings</h1>
-          <p>Configure the default AI provider and API keys used for AI quiz and question paper generation.</p>
+          <p>Configure your personal AI provider and unique API key for AI quiz and question paper generation.</p>
         </div>
       </div>
 
@@ -614,9 +630,19 @@ function AISettingsPanel({ setNotice }: { setNotice: (msg: string) => void }) {
           {saved && (
             <div className="compact-nep" style={{ background: '#ecfdf5', borderColor: '#6ee7b7', color: '#047857' }}>
               <CheckCircle2 size={18} />
-              <span>AI Settings saved! All AI quiz and question paper generators will use these preferences.</span>
+              <span>AI Settings saved! Your personal API key is securely registered to your teacher account.</span>
             </div>
           )}
+
+          {keyError && (
+            <div className="inline-error" style={{ fontSize: '14px', padding: '12px 16px', borderRadius: '10px' }}>
+              {keyError}
+            </div>
+          )}
+
+          <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '12px', padding: '14px 16px', fontSize: '13px', color: '#334155', lineHeight: 1.5 }}>
+            <strong style={{ color: '#0f172a' }}>🔒 Teacher API Key Policy:</strong> Every teacher must provide their own unique Google Gemini or OpenAI API key. Duplication or sharing of API keys between teacher accounts is strictly prohibited by the system.
+          </div>
 
           <div className="form-grid-2">
             <label className="field compact-field">
@@ -632,13 +658,13 @@ function AISettingsPanel({ setNotice }: { setNotice: (msg: string) => void }) {
             </label>
 
             <label className="field compact-field">
-              <span>API Key</span>
+              <span>Personal API Key *</span>
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                 <input
                   type={showKey ? 'text' : 'password'}
                   value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="Paste your API key here..."
+                  onChange={(e) => { setApiKey(e.target.value); setKeyError(''); }}
+                  placeholder="Paste your unique Gemini or OpenAI API key..."
                   style={{ flex: 1 }}
                 />
                 <button
@@ -651,13 +677,13 @@ function AISettingsPanel({ setNotice }: { setNotice: (msg: string) => void }) {
                 </button>
               </div>
               <small className="muted" style={{ marginTop: '4px' }}>
-                Optional. If left empty, default server environment keys will be used.
+                Each teacher must enter their own unique API key. No sharing or duplication allowed.
               </small>
             </label>
           </div>
 
           <div className="compact-modal-actions" style={{ marginTop: '20px' }}>
-            <button type="submit" className="button button-primary" style={{ padding: '0 28px', minHeight: '44px' }} disabled={saving}>
+            <button type="submit" className="button button-primary" style={{ padding: '0 28px', minHeight: '44px' }} disabled={saving || loading}>
               {saving ? 'Saving...' : <><Save size={16} /> Save AI Settings</>}
             </button>
           </div>
@@ -674,10 +700,10 @@ function AISettingsPanel({ setNotice }: { setNotice: (msg: string) => void }) {
                 {provider === 'gemini' ? 'Google Gemini AI' : provider === 'openai' ? 'ChatGPT (OpenAI)' : 'Auto (Gemini / GPT)'}
               </div>
             </div>
-            <div style={{ padding: '14px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '12px' }}>
-              <span style={{ fontSize: '12px', color: '#64748b', fontWeight: 600 }}>API Key Status</span>
-              <div style={{ fontSize: '15px', fontWeight: 700, color: apiKey ? '#047857' : '#0284c7', marginTop: '4px' }}>
-                {apiKey ? '✓ Custom Key Set' : 'Default Server Key'}
+            <div style={{ padding: '14px', background: apiKey ? '#f0fdf4' : '#fffbeb', border: apiKey ? '1px solid #bbf7d0' : '1px solid #fde68a', borderRadius: '12px' }}>
+              <span style={{ fontSize: '12px', color: apiKey ? '#166534' : '#92400e', fontWeight: 600 }}>API Key Status</span>
+              <div style={{ fontSize: '15px', fontWeight: 700, color: apiKey ? '#15803d' : '#b45309', marginTop: '4px' }}>
+                {apiKey ? '✓ Personal Key Active' : '⚠️ No API Key Added'}
               </div>
             </div>
           </div>
@@ -1110,15 +1136,27 @@ function AIQuizModal({ onClose, onGenerated, onNavigateToAISettings }: { onClose
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState('');
+  const [hasTeacherKey, setHasTeacherKey] = useState<boolean | null>(null);
 
   const provider = localStorage.getItem('livequiz_ai_provider') || 'auto';
-  const apiKey = localStorage.getItem('livequiz_ai_key') || '';
+
+  useEffect(() => {
+    localStorage.removeItem('livequiz_ai_key');
+    fetch('/api/teacher/profile', { credentials: 'same-origin' })
+      .then((r) => r.json())
+      .then((d) => setHasTeacherKey(Boolean(d.teacher?.apiKey || d.teacher?.hasApiKey)))
+      .catch(() => setHasTeacherKey(false));
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!topic.trim()) { setError('Please enter a topic.'); return; }
     if (strictMode && sourceFiles.length === 0) {
       setError('Please upload at least one sample paper, chapter scan, or image to generate strictly from uploaded content.');
+      return;
+    }
+    if (hasTeacherKey === false) {
+      setError('Every teacher must add their own unique personal AI API Key in AI Settings before generating quizzes. Duplication or sharing of keys is not allowed.');
       return;
     }
     setError('');
@@ -1138,7 +1176,6 @@ function AIQuizModal({ onClose, onGenerated, onNavigateToAISettings }: { onClose
           mode,
           details,
           provider,
-          apiKey: apiKey.trim() || undefined,
           strictSourceContent: strictMode,
           uploadedFiles: sourceFiles.length > 0 ? sourceFiles : undefined,
         }),
@@ -1153,14 +1190,14 @@ function AIQuizModal({ onClose, onGenerated, onNavigateToAISettings }: { onClose
 
   return (
     <form onSubmit={handleSubmit} className="ai-form-grid">
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: '12px', color: '#0369a1', fontSize: '13.5px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', background: hasTeacherKey === false ? '#fffbeb' : '#f0f9ff', border: hasTeacherKey === false ? '1px solid #fde68a' : '1px solid #bae6fd', borderRadius: '12px', color: hasTeacherKey === false ? '#92400e' : '#0369a1', fontSize: '13.5px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <Sparkles size={16} />
-          <span>AI Engine Settings: <strong>{provider === 'gemini' ? 'Google Gemini AI' : provider === 'openai' ? 'ChatGPT (OpenAI)' : 'Auto Select'}</strong> {apiKey ? '(Custom API Key Active)' : '(Server Key)'}</span>
+          <span>AI Engine Settings: <strong>{provider === 'gemini' ? 'Google Gemini AI' : provider === 'openai' ? 'ChatGPT (OpenAI)' : 'Auto Select'}</strong> {hasTeacherKey ? '(Personal Key Active ✓)' : '(No Key Configured ⚠️)'}</span>
         </div>
         {onNavigateToAISettings && (
-          <button type="button" className="text-button" style={{ fontSize: '12.5px', color: '#0284c7', fontWeight: 600, padding: 0 }} onClick={onNavigateToAISettings}>
-            Configure AI Settings →
+          <button type="button" className="text-button" style={{ fontSize: '12.5px', color: hasTeacherKey === false ? '#b45309' : '#0284c7', fontWeight: 600, padding: 0 }} onClick={onNavigateToAISettings}>
+            {hasTeacherKey === false ? 'Add Your API Key →' : 'Configure AI Settings →'}
           </button>
         )}
       </div>
@@ -2646,7 +2683,7 @@ function StudentApp({ user, onSignOut, notice, setNotice, onViewPortal }: { user
             <div className="avatar avatar-green">{(user.name ?? 'S').slice(0, 1).toUpperCase()}</div>
             <div className="profile-copy">
               <strong>{user.name}</strong>
-              <span>{user.grade ? `${user.grade} · Student` : 'Student account'}</span>
+              <span title={user.teacherName ? `Teacher: ${user.teacherName}` : undefined}>{user.teacherName ? `Teacher: ${user.teacherName}` : (user.grade ? `${user.grade} · Student` : 'Student account')}</span>
             </div>
             <button className="icon-button quiet" title="Sign out" aria-label="Sign out" onClick={onSignOut}>
               <LogOut size={16} />
@@ -3565,10 +3602,18 @@ function AIWorksheetModal({ onClose, onGenerated, onNavigateToAISettings }: { on
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState('');
+  const [hasTeacherKey, setHasTeacherKey] = useState<boolean | null>(null);
 
   const provider = localStorage.getItem('livequiz_ai_provider') || 'auto';
-  const apiKey = localStorage.getItem('livequiz_ai_key') || '';
   const activeSubject = selectedSubject === 'Other / Custom Subject' ? (customSubject.trim() || 'General') : selectedSubject;
+
+  useEffect(() => {
+    localStorage.removeItem('livequiz_ai_key');
+    fetch('/api/teacher/profile', { credentials: 'same-origin' })
+      .then((r) => r.json())
+      .then((d) => setHasTeacherKey(Boolean(d.teacher?.apiKey || d.teacher?.hasApiKey)))
+      .catch(() => setHasTeacherKey(false));
+  }, []);
 
   async function generate(e: React.FormEvent) {
     e.preventDefault();
@@ -3579,6 +3624,10 @@ function AIWorksheetModal({ onClose, onGenerated, onNavigateToAISettings }: { on
     }
     if (strictMode && sourceFiles.length === 0) {
       setError('Please upload at least one sample paper, chapter scan, or image to generate strictly from uploaded content.');
+      return;
+    }
+    if (hasTeacherKey === false) {
+      setError('Every teacher must add their own unique personal AI API Key in AI Settings before generating question papers. Duplication or sharing of keys is not allowed.');
       return;
     }
     setGenerating(true);
@@ -3595,7 +3644,6 @@ function AIWorksheetModal({ onClose, onGenerated, onNavigateToAISettings }: { on
           totalMarks,
           details,
           provider,
-          apiKey: apiKey.trim() || undefined,
           strictSourceContent: strictMode,
           uploadedFiles: sourceFiles.length > 0 ? sourceFiles : undefined,
         }),
@@ -3610,14 +3658,14 @@ function AIWorksheetModal({ onClose, onGenerated, onNavigateToAISettings }: { on
 
   return (
     <form onSubmit={generate} className="ai-form-grid">
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: '12px', color: '#0369a1', fontSize: '13.5px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', background: hasTeacherKey === false ? '#fffbeb' : '#f0f9ff', border: hasTeacherKey === false ? '1px solid #fde68a' : '1px solid #bae6fd', borderRadius: '12px', color: hasTeacherKey === false ? '#92400e' : '#0369a1', fontSize: '13.5px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <Sparkles size={16} />
-          <span>AI Engine Settings: <strong>{provider === 'gemini' ? 'Google Gemini AI' : provider === 'openai' ? 'ChatGPT (OpenAI)' : 'Auto Select'}</strong> {apiKey ? '(Custom API Key Active)' : '(Server Key)'}</span>
+          <span>AI Engine Settings: <strong>{provider === 'gemini' ? 'Google Gemini AI' : provider === 'openai' ? 'ChatGPT (OpenAI)' : 'Auto Select'}</strong> {hasTeacherKey ? '(Personal Key Active ✓)' : '(No Key Configured ⚠️)'}</span>
         </div>
         {onNavigateToAISettings && (
-          <button type="button" className="text-button" style={{ fontSize: '12.5px', color: '#0284c7', fontWeight: 600, padding: 0 }} onClick={onNavigateToAISettings}>
-            Configure AI Settings →
+          <button type="button" className="text-button" style={{ fontSize: '12.5px', color: hasTeacherKey === false ? '#b45309' : '#0284c7', fontWeight: 600, padding: 0 }} onClick={onNavigateToAISettings}>
+            {hasTeacherKey === false ? 'Add Your API Key →' : 'Configure AI Settings →'}
           </button>
         )}
       </div>
