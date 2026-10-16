@@ -65,6 +65,31 @@ const passkeyLookup = (passkey: string) => createHmac('sha256', 'livequiz-passke
 const signSession = (session: Session) => jwt.sign(session, secret, { expiresIn: '12h' });
 const sendSession = (res: Response, session: Session) => res.cookie(sessionCookie, signSession(session), cookieOptions);
 
+// In-Memory Chat caches and socket tracking
+const userTeacherIdCache = new Map<string, { teacherId: string; expires: number }>();
+const chatMemoryCache = new Map<string, any[]>();
+const activeTeacherSockets = new Map<string, Set<string>>();
+const teacherDisconnectTimers = new Map<string, NodeJS.Timeout>();
+
+async function clearTeacherChatMessages(teacherId: string) {
+  try {
+    for (const key of Array.from(chatMemoryCache.keys())) {
+      if (key.startsWith(`${teacherId}:`)) {
+        chatMemoryCache.delete(key);
+      }
+    }
+    const res = await (prisma as any).chatMessage.deleteMany({
+      where: { teacherId },
+    });
+    console.log(`🧹 Deleted ${res.count} chat messages for teacher ${teacherId}`);
+    io.to(`chat:${teacherId}:everyone`).emit('chat:cleared');
+    io.to(`chat:${teacherId}:teacher`).emit('chat:cleared');
+  } catch (err) {
+    console.error('Error clearing chat messages:', err);
+  }
+}
+
+
 const authenticate = (allowedRoles?: Role | Role[]) => async (req: AuthRequest, res: Response, next: NextFunction) => {
   const token = req.cookies[sessionCookie] as string | undefined;
   try {
@@ -521,6 +546,11 @@ app.patch('/api/teacher/api-key', teacherOnly, async (req: AuthRequest, res: Res
           error: 'This API Key is reserved for the system administrator. Every teacher must use their own personal API key.',
         });
       }
+      if (process.env.DEEPSEEK_API_KEY && cleanKey === process.env.DEEPSEEK_API_KEY.trim()) {
+        return res.status(400).json({
+          error: 'This API Key is reserved for the system administrator. Every teacher must use their own personal API key.',
+        });
+      }
     }
 
     await db.teacher.update({
@@ -605,12 +635,80 @@ app.delete('/api/superadmin/teachers/:id', superAdminOnly, async (req: Request, 
   } catch (error) { errorResponse(res, error); }
 });
 
-app.all('/api/auth/logout', (_req: Request, res: Response) => {
+app.all('/api/auth/logout', async (req: Request, res: Response) => {
+  try {
+    const token = req.cookies?.[sessionCookie];
+    if (token) {
+      const payload = jwt.verify(token, secret) as JwtPayload & Session;
+      if (payload && (payload.role === 'teacher' || payload.role === 'admin' || payload.role === 'superadmin')) {
+        let teacherId = payload.id;
+        const teacher = await db.teacher.findUnique({ where: { id: payload.id }, select: { id: true } });
+        if (teacher) {
+          teacherId = teacher.id;
+        } else if (payload.email) {
+          const tByEmail = await db.teacher.findUnique({ where: { email: payload.email }, select: { id: true } });
+          if (tByEmail) teacherId = tByEmail.id;
+        }
+        await clearTeacherChatMessages(teacherId);
+      }
+    }
+  } catch {
+    // Ignore invalid/expired token on logout
+  }
   res.clearCookie(sessionCookie, { ...cookieOptions, maxAge: 0 });
   res.clearCookie(sessionCookie, { path: '/' });
   res.clearCookie(sessionCookie);
   return res.json({ ok: true });
 });
+
+function normalizeGrade(grade?: string | null): string {
+  if (!grade) return '';
+  const trimmed = grade.trim();
+  if (!trimmed) return '';
+  const match = trimmed.match(/(?:grade|class)?\s*[- ]?\s*(\d+)/i);
+  if (match) {
+    return `Grade ${match[1]}`;
+  }
+  return trimmed;
+}
+
+function getGradeVariants(gradeStr?: string | null): string[] {
+  if (!gradeStr) return [];
+  const trimmed = gradeStr.trim();
+  if (!trimmed) return [];
+  const variants = new Set<string>();
+  variants.add(trimmed);
+  const match = trimmed.match(/(?:grade|class)?\s*[- ]?\s*(\d+)/i);
+  if (match) {
+    const num = match[1];
+    variants.add(`Grade ${num}`);
+    variants.add(`Grade-${num}`);
+    variants.add(`Class ${num}`);
+    variants.add(`Class-${num}`);
+    variants.add(`grade ${num}`);
+    variants.add(`grade-${num}`);
+    variants.add(num);
+  } else {
+    variants.add(trimmed.replace(/[-_]+/g, ' '));
+    variants.add(trimmed.replace(/\s+/g, '-'));
+  }
+  return Array.from(variants);
+}
+
+function gradesMatch(gradeA?: string | null, gradeB?: string | null): boolean {
+  if (!gradeA || !gradeB) return true;
+  const cleanA = gradeA.trim().toLowerCase();
+  const cleanB = gradeB.trim().toLowerCase();
+  if (cleanA === cleanB || cleanA === 'all grades' || cleanB === 'all grades' || !cleanA || !cleanB) return true;
+
+  const matchA = cleanA.match(/(?:grade|class)?\s*[- ]?\s*(\d+)/);
+  const matchB = cleanB.match(/(?:grade|class)?\s*[- ]?\s*(\d+)/);
+  if (matchA && matchB) {
+    return matchA[1] === matchB[1];
+  }
+  return cleanA.replace(/[-_\s]+/g, '') === cleanB.replace(/[-_\s]+/g, '');
+}
+
 const uploadedFileSchema = z.object({
   name: z.string().max(255),
   type: z.string().max(100),
@@ -628,7 +726,7 @@ const aiQuizInput = z.object({
   questionType: z.enum(['ALL', 'MCQ', 'FILL_BLANK', 'TRUE_FALSE', 'SOLVE']).default('ALL'),
   mode: z.enum(['LIVE', 'SELF_PACED']),
   details: z.string().trim().max(2000).optional(),
-  provider: z.enum(['auto', 'gemini', 'openai']).optional(),
+  provider: z.enum(['auto', 'gemini', 'openai', 'deepseek']).optional(),
   apiKey: z.string().trim().optional(),
   strictSourceContent: z.boolean().optional(),
   uploadedFiles: z.array(uploadedFileSchema).max(15).optional(),
@@ -1434,16 +1532,20 @@ async function generateAIQuiz(data: z.infer<typeof aiQuizInput>) {
 
   const geminiKey = selectedProvider === 'gemini' ? (customKey || process.env.GEMINI_API_KEY) : (process.env.GEMINI_API_KEY || (selectedProvider === 'auto' ? customKey : undefined));
   const openaiKey = selectedProvider === 'openai' ? (customKey || process.env.OPENAI_API_KEY) : (process.env.OPENAI_API_KEY || (selectedProvider === 'auto' ? customKey : undefined));
+  const deepseekKey = selectedProvider === 'deepseek' ? (customKey || process.env.DEEPSEEK_API_KEY) : (process.env.DEEPSEEK_API_KEY || (selectedProvider === 'auto' ? customKey : undefined));
 
   // Enforce API Key requirements per provider selection
   if (selectedProvider === 'gemini' && !geminiKey) {
-    throw new Error('Google Gemini API Key is required. Please paste your Gemini API Key in the field below or set GEMINI_API_KEY in your server .env file.');
+    throw new Error('Google Gemini API Key is required. Please paste your Gemini API Key in AI Settings or set GEMINI_API_KEY in your server .env file.');
   }
   if (selectedProvider === 'openai' && !openaiKey) {
-    throw new Error('ChatGPT (OpenAI) API Key is required. Please paste your OpenAI API Key in the field below or set OPENAI_API_KEY in your server .env file.');
+    throw new Error('ChatGPT (OpenAI) API Key is required. Please paste your OpenAI API Key in AI Settings or set OPENAI_API_KEY in your server .env file.');
   }
-  if (selectedProvider === 'auto' && !geminiKey && !openaiKey) {
-    throw new Error('API Key is required for AI Quiz Generation. Please select Google Gemini or ChatGPT in the provider dropdown and paste your API key in the field below.');
+  if (selectedProvider === 'deepseek' && !deepseekKey) {
+    throw new Error('DeepSeek API Key is required. Please paste your DeepSeek API Key in AI Settings or set DEEPSEEK_API_KEY in your server .env file.');
+  }
+  if (selectedProvider === 'auto' && !geminiKey && !openaiKey && !deepseekKey) {
+    throw new Error('API Key is required for AI Quiz Generation. Please select Google Gemini, ChatGPT, or DeepSeek in AI Settings and paste your API key.');
   }
 
   const hasUploadedFiles = Boolean(data.uploadedFiles && data.uploadedFiles.length > 0);
@@ -1499,6 +1601,50 @@ async function generateAIQuiz(data: z.infer<typeof aiQuizInput>) {
       if (parsed && parsed.questions.length > 0) return parsed;
     }
     throw new Error('ChatGPT returned an unparseable response. Please try again.');
+  }
+
+  if (selectedProvider === 'deepseek' || (selectedProvider === 'auto' && deepseekKey && !geminiKey && !openaiKey)) {
+    const candidateModels = ['deepseek-chat', 'deepseek-reasoner'];
+    let lastError = '';
+
+    for (const model of candidateModels) {
+      try {
+        const bodyPayload: any = {
+          model,
+          messages: [
+            { role: 'system', content: systemRole },
+            { role: 'user', content: prompt }
+          ]
+        };
+        if (model === 'deepseek-chat') {
+          bodyPayload.response_format = { type: 'json_object' };
+        }
+
+        const response = await fetch('https://api.deepseek.com/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${deepseekKey}`,
+          },
+          body: JSON.stringify(bodyPayload)
+        });
+
+        const jsonResult: any = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          lastError = jsonResult?.error?.message ?? response.statusText;
+          continue;
+        }
+
+        const content = jsonResult.choices?.[0]?.message?.content;
+        if (content) {
+          const parsed = parseAIResponseJSON(content, data);
+          if (parsed && parsed.questions.length > 0) return parsed;
+        }
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+      }
+    }
+    throw new Error(`DeepSeek API Error: ${lastError || 'DeepSeek returned an unparseable response. Please try again.'}`);
   }
 
   if (selectedProvider === 'gemini' || (selectedProvider === 'auto' && geminiKey)) {
@@ -1601,7 +1747,7 @@ app.post('/api/ai/generate-quiz', adminOnly, async (req: AuthRequest, res: Respo
     // Require each teacher to have their own API key configured
     if (!data.apiKey && req.session?.role !== 'superadmin') {
       return res.status(400).json({
-        error: 'API Key missing. Every teacher must add their own unique Gemini or OpenAI API Key in AI Settings before generating quizzes.',
+        error: 'API Key missing. Every teacher must add their own unique Gemini, OpenAI, or DeepSeek API Key in AI Settings before generating quizzes.',
       });
     }
 
@@ -2003,6 +2149,7 @@ app.get('/api/student/quizzes', studentOnly, async (req: AuthRequest, res: Respo
   const student: any = await (prisma as any).student.findUnique({ where: { id: studentId }, select: { teacherId: true, grade: true } });
   const teacherFilter: any = student?.teacherId ? { teacherId: student.teacherId } : {};
   const studentGrade = student?.grade || 'Grade 6';
+  const gradeVariants = getGradeVariants(studentGrade);
 
   const quizzes = await (prisma.quiz as any).findMany({
     where: {
@@ -2012,7 +2159,8 @@ app.get('/api/student/quizzes', studentOnly, async (req: AuthRequest, res: Respo
           OR: [
             { grade: null },
             { grade: '' },
-            { grade: studentGrade },
+            { grade: 'All Grades' },
+            { grade: { in: gradeVariants } },
           ]
         },
         {
@@ -2055,7 +2203,7 @@ app.get('/api/student/quizzes/:id', studentOnly, async (req: AuthRequest, res: R
 
     const student: any = await (prisma.student as any).findUnique({ where: { id: req.session!.id }, select: { grade: true } });
     const studentGrade = student?.grade || 'Grade 6';
-    if (quiz.grade && quiz.grade !== studentGrade) {
+    if (quiz.grade && !gradesMatch(quiz.grade, studentGrade)) {
       return res.status(403).json({ error: `This quiz is assigned for ${quiz.grade} students only.` });
     }
 
@@ -2116,7 +2264,69 @@ io.on('connection', (socket) => {
   const session = socket.data.session as Session;
   if (session.role === 'student') {
     socket.join('students:lobby');
+    prisma.student.findUnique({ where: { id: session.id }, select: { teacherId: true } })
+      .then((st) => {
+        if (st?.teacherId) {
+          socket.join(`chat:${st.teacherId}:everyone`);
+          socket.join(`chat:${st.teacherId}:direct:${session.id}`);
+        }
+      })
+      .catch(() => { });
+  } else if (session.role === 'teacher' || session.role === 'admin' || session.role === 'superadmin') {
+    db.teacher.findUnique({ where: { id: session.id }, select: { id: true } })
+      .then((t: any) => (t ? (t.id as string) : session.id))
+      .then((teacherId: string) => {
+        socket.join(`chat:${teacherId}:everyone`);
+        socket.join(`chat:${teacherId}:teacher`);
+
+        // If teacher had a pending disconnect timer (e.g. refreshed the page), cancel it
+        if (teacherDisconnectTimers.has(teacherId)) {
+          clearTimeout(teacherDisconnectTimers.get(teacherId)!);
+          teacherDisconnectTimers.delete(teacherId);
+          console.log(`Teacher ${teacherId} reconnected; cancelled chat auto-clear timer.`);
+        }
+
+        let sockSet = activeTeacherSockets.get(teacherId);
+        if (!sockSet) {
+          sockSet = new Set();
+          activeTeacherSockets.set(teacherId, sockSet);
+        }
+        sockSet.add(socket.id);
+
+        socket.on('disconnect', () => {
+          const set = activeTeacherSockets.get(teacherId);
+          if (set) {
+            set.delete(socket.id);
+            if (set.size === 0) {
+              activeTeacherSockets.delete(teacherId);
+              // Wait 10 seconds before clearing chat to avoid wiping on page reload (F5)
+              const timer = setTimeout(async () => {
+                teacherDisconnectTimers.delete(teacherId);
+                if (!activeTeacherSockets.has(teacherId)) {
+                  console.log(`Teacher ${teacherId} closed browser / disconnected. Auto-deleting classroom chats.`);
+                  await clearTeacherChatMessages(teacherId);
+                }
+              }, 10000);
+              teacherDisconnectTimers.set(teacherId, timer);
+            }
+          }
+        });
+      })
+      .catch(() => {});
   }
+
+  socket.on('chat:join_direct', (studentId: string) => {
+    if (typeof studentId !== 'string') return;
+    if (session.role === 'teacher' || session.role === 'admin' || session.role === 'superadmin') {
+      db.teacher.findUnique({ where: { id: session.id }, select: { id: true } })
+        .then((t: any) => (t ? (t.id as string) : session.id))
+        .then((teacherId: string) => {
+          socket.join(`chat:${teacherId}:direct:${studentId}`);
+        })
+        .catch(() => {});
+    }
+  });
+
   socket.on('watch:quiz', async (quizId: string) => {
     if (typeof quizId !== 'string') return;
     const quiz = await prisma.quiz.findUnique({ where: { id: quizId }, select: { id: true, status: true } });
@@ -2127,12 +2337,283 @@ io.on('connection', (socket) => {
   });
 });
 
+// --- CLASSROOM CHAT ROUTES (Everyone & One-to-One) ---
+
+async function resolveTeacherIdForChat(req: AuthRequest): Promise<string | null> {
+  if (!req.session) return null;
+  const cached = userTeacherIdCache.get(req.session.id);
+  if (cached && cached.expires > Date.now()) {
+    return cached.teacherId;
+  }
+  let teacherId: string | null = null;
+  if (req.session.role === 'student') {
+    const student = await prisma.student.findUnique({
+      where: { id: req.session.id },
+      select: { teacherId: true },
+    });
+    teacherId = student?.teacherId || null;
+  } else if (req.session.role === 'teacher' || req.session.role === 'admin') {
+    const teacher = await db.teacher.findUnique({ where: { id: req.session.id }, select: { id: true } });
+    if (teacher) {
+      teacherId = teacher.id;
+    } else if (req.session.email) {
+      const teacherByEmail = await db.teacher.findUnique({ where: { email: req.session.email }, select: { id: true } });
+      if (teacherByEmail) teacherId = teacherByEmail.id;
+    } else {
+      teacherId = req.session.id;
+    }
+  } else if (req.session.role === 'superadmin') {
+    if (req.query.teacherId) return String(req.query.teacherId);
+    const firstTeacher = await prisma.teacher.findFirst({ select: { id: true } });
+    teacherId = firstTeacher?.id || null;
+  }
+  if (teacherId) {
+    userTeacherIdCache.set(req.session.id, { teacherId, expires: Date.now() + 10 * 60 * 1000 });
+  }
+  return teacherId;
+}
+
+app.get('/api/chat/peers', authenticate(), async (req: AuthRequest, res: Response) => {
+  try {
+    const role = req.session!.role;
+    if (role === 'student') {
+      const student = await prisma.student.findUnique({
+        where: { id: req.session!.id },
+        select: {
+          id: true,
+          name: true,
+          grade: true,
+          teacherId: true,
+          teacher: { select: { id: true, name: true, school: true, subject: true } },
+        },
+      });
+      if (!student || !student.teacherId) {
+        return res.json({ teacher: null, classroomName: 'Chatroom', students: [] });
+      }
+      return res.json({
+        teacher: student.teacher,
+        classroomName: 'Chatroom',
+        students: [],
+      });
+    }
+
+    const teacherId = await resolveTeacherIdForChat(req);
+    if (!teacherId) return res.status(404).json({ error: 'Teacher not found' });
+
+    const students = await prisma.student.findMany({
+      where: { teacherId, active: true },
+      select: { id: true, name: true, grade: true },
+      orderBy: { name: 'asc' },
+    });
+
+    const teacher = await prisma.teacher.findUnique({
+      where: { id: teacherId },
+      select: { id: true, name: true, school: true, subject: true },
+    });
+
+    return res.json({
+      teacher,
+      students,
+      classroomName: 'Chatroom',
+    });
+  } catch (error) {
+    errorResponse(res, error);
+  }
+});
+
+app.get('/api/chat/messages', authenticate(), async (req: AuthRequest, res: Response) => {
+  try {
+    const channel = req.query.channel === 'direct' ? 'direct' : 'everyone';
+    const limit = Math.min(Math.max(Number(req.query.limit) || 60, 1), 100);
+    const before = req.query.before ? new Date(String(req.query.before)) : undefined;
+
+    const teacherId = await resolveTeacherIdForChat(req);
+    if (!teacherId) {
+      return res.json({ messages: [] });
+    }
+
+    let studentId: string | null = null;
+    if (channel === 'direct') {
+      if (req.session!.role === 'student') {
+        studentId = req.session!.id;
+      } else {
+        studentId = req.query.studentId ? String(req.query.studentId) : null;
+        if (!studentId) {
+          return res.status(400).json({ error: 'studentId is required for direct chat' });
+        }
+      }
+    }
+
+    const cacheKey = channel === 'everyone' ? `${teacherId}:everyone` : `${teacherId}:direct:${studentId}`;
+
+    // Return instant memory cache if initial/refresh request without pagination
+    if (!before && chatMemoryCache.has(cacheKey)) {
+      return res.json({ messages: chatMemoryCache.get(cacheKey) });
+    }
+
+    const where: any = {
+      teacherId,
+      channel,
+    };
+
+    if (channel === 'direct' && studentId) {
+      where.studentId = studentId;
+    }
+
+    if (before && !isNaN(before.getTime())) {
+      where.createdAt = { lt: before };
+    }
+
+    const messages = await (prisma as any).chatMessage.findMany({
+      where,
+      orderBy: { createdAt: 'asc' },
+      take: limit,
+      select: {
+        id: true,
+        teacherId: true,
+        studentId: true,
+        senderId: true,
+        senderName: true,
+        senderRole: true,
+        channel: true,
+        content: true,
+        createdAt: true,
+      },
+    });
+
+    if (!before) {
+      chatMemoryCache.set(cacheKey, messages);
+    }
+
+    return res.json({ messages });
+  } catch (error) {
+    errorResponse(res, error);
+  }
+});
+
+app.post('/api/chat/messages', authenticate(), async (req: AuthRequest, res: Response) => {
+  try {
+    const data = parse(
+      z.object({
+        channel: z.enum(['everyone', 'direct']).default('everyone'),
+        studentId: z.string().optional().nullable(),
+        content: z.string().trim().min(1, 'Message cannot be empty').max(2000, 'Message is too long (max 2000 characters)'),
+      }),
+      req.body
+    );
+
+    const role = req.session!.role;
+    let teacherId: string | null = null;
+    let studentId: string | null = null;
+    let senderName = 'User';
+
+    if (role === 'student') {
+      const student = await prisma.student.findUnique({
+        where: { id: req.session!.id },
+        select: { id: true, name: true, teacherId: true, active: true },
+      });
+      if (!student || !student.active || !student.teacherId) {
+        return res.status(403).json({ error: 'You must be linked to an active teacher to send messages.' });
+      }
+      teacherId = student.teacherId;
+      studentId = data.channel === 'direct' ? student.id : null;
+      senderName = student.name;
+    } else {
+      teacherId = await resolveTeacherIdForChat(req);
+      if (!teacherId) return res.status(404).json({ error: 'Teacher account not found.' });
+
+      const teacher = await prisma.teacher.findUnique({
+        where: { id: teacherId },
+        select: { id: true, name: true },
+      });
+      senderName = teacher?.name || 'Teacher';
+
+      if (data.channel === 'direct') {
+        if (!data.studentId) {
+          return res.status(400).json({ error: 'Please select a student for one-to-one chat.' });
+        }
+        const student = await prisma.student.findFirst({
+          where: { id: data.studentId, ...(role !== 'superadmin' ? { teacherId } : {}) },
+          select: { id: true },
+        });
+        if (!student) {
+          return res.status(404).json({ error: 'Student not found in your classroom.' });
+        }
+        studentId = student.id;
+      }
+    }
+
+    const message = await (prisma as any).chatMessage.create({
+      data: {
+        teacherId,
+        studentId,
+        senderId: req.session!.id,
+        senderName,
+        senderRole: role === 'student' ? 'student' : 'teacher',
+        channel: data.channel,
+        content: data.content,
+      },
+    });
+
+    // Update in-memory cache for instant subsequent reads
+    const cacheKey = data.channel === 'everyone' ? `${teacherId}:everyone` : `${teacherId}:direct:${studentId}`;
+    let cached = chatMemoryCache.get(cacheKey);
+    if (!cached) cached = [];
+    cached.push(message);
+    if (cached.length > 100) cached.shift();
+    chatMemoryCache.set(cacheKey, cached);
+
+    // Real-time broadcast
+    if (data.channel === 'everyone') {
+      io.to(`chat:${teacherId}:everyone`).emit('chat:message', message);
+    } else if (studentId) {
+      io.to(`chat:${teacherId}:direct:${studentId}`).emit('chat:message', message);
+      if (role === 'student') {
+        io.to(`chat:${teacherId}:teacher`).emit('chat:direct_notification', {
+          studentId,
+          message,
+        });
+      }
+    }
+
+    return res.status(201).json({ message });
+  } catch (error) {
+    errorResponse(res, error);
+  }
+});
+
+app.delete('/api/chat/messages', authenticate(['admin', 'teacher', 'superadmin']), async (req: AuthRequest, res: Response) => {
+  try {
+    const teacherId = await resolveTeacherIdForChat(req);
+    if (!teacherId) return res.status(403).json({ error: 'Only teachers can clear classroom chat.' });
+    await clearTeacherChatMessages(teacherId);
+    return res.json({ ok: true, message: 'Classroom chat cleared.' });
+  } catch (error) {
+    errorResponse(res, error);
+  }
+});
+
 // --- WORKSHEET & QUESTION PAPER ROUTES ---
 
 app.get('/api/worksheets', authenticate(), async (req: AuthRequest, res: Response) => {
   try {
     if (req.session?.role === 'admin' || req.session?.role === 'teacher' || req.session?.role === 'superadmin') {
-      const where: any = req.session.role === 'superadmin' ? {} : { teacherId: req.session.id };
+      let resolvedTeacherId = req.session.id;
+      if (req.session.role !== 'superadmin') {
+        const teacher = await db.teacher.findUnique({ where: { id: req.session.id }, select: { id: true } });
+        if (!teacher && req.session.email) {
+          const teacherByEmail = await db.teacher.findUnique({ where: { email: req.session.email }, select: { id: true } });
+          if (teacherByEmail) resolvedTeacherId = teacherByEmail.id;
+        }
+      }
+      const where: any = req.session.role === 'superadmin'
+        ? {}
+        : {
+          OR: [
+            { teacherId: req.session.id },
+            ...(resolvedTeacherId !== req.session.id ? [{ teacherId: resolvedTeacherId }] : []),
+          ],
+        };
       const worksheets = await prisma.worksheetPaper.findMany({
         where,
         orderBy: { createdAt: 'desc' },
@@ -2146,6 +2627,7 @@ app.get('/api/worksheets', authenticate(), async (req: AuthRequest, res: Respons
     const student: any = await (prisma as any).student.findUnique({ where: { id: req.session!.id }, select: { teacherId: true, grade: true } });
     const teacherFilter: any = student?.teacherId ? { teacherId: student.teacherId } : {};
     const studentGrade = student?.grade || 'Grade 6';
+    const gradeVariants = getGradeVariants(studentGrade);
     const worksheets = await prisma.worksheetPaper.findMany({
       where: {
         ...teacherFilter,
@@ -2153,7 +2635,8 @@ app.get('/api/worksheets', authenticate(), async (req: AuthRequest, res: Respons
         OR: [
           { grade: null },
           { grade: '' },
-          { grade: studentGrade },
+          { grade: 'All Grades' },
+          { grade: { in: gradeVariants } },
         ],
       },
       orderBy: { createdAt: 'desc' },
@@ -2197,7 +2680,7 @@ app.get('/api/worksheets/:id', authenticate(), async (req: AuthRequest, res: Res
     if (req.session?.role === 'student') {
       const student: any = await (prisma.student as any).findUnique({ where: { id: req.session!.id }, select: { grade: true } });
       const studentGrade = student?.grade || 'Grade 6';
-      if ((worksheet as any).grade && (worksheet as any).grade !== studentGrade) {
+      if ((worksheet as any).grade && !gradesMatch((worksheet as any).grade, studentGrade)) {
         return res.status(403).json({ error: `This question paper is assigned for ${(worksheet as any).grade} students only.` });
       }
       const submission = worksheet.submissions?.[0] ?? null;
@@ -2220,7 +2703,8 @@ app.post('/api/worksheets', adminOnly, async (req: AuthRequest, res: Response) =
     });
     const data = parse(schema, req.body);
     const teacherId = req.session!.id;
-    const paper = await (prisma as any).worksheetPaper.create({ data: { ...data, teacherId } });
+    const normalizedGrade = normalizeGrade(data.grade) || data.grade;
+    const paper = await (prisma as any).worksheetPaper.create({ data: { ...data, grade: normalizedGrade, teacherId } });
     res.status(201).json({ paper });
   } catch (error) { errorResponse(res, error); }
 });
@@ -2236,7 +2720,7 @@ app.post('/api/worksheets/ai-generate', adminOnly, async (req: AuthRequest, res:
       totalMarks: z.number().int().min(10).max(200).default(100),
       details: z.string().trim().max(500).optional(),
       apiKey: z.string().trim().optional(),
-      provider: z.enum(['auto', 'gemini', 'openai']).optional(),
+      provider: z.enum(['auto', 'gemini', 'openai', 'deepseek']).optional(),
       strictSourceContent: z.boolean().optional(),
       uploadedFiles: z.array(uploadedFileSchema).max(15).optional(),
     });
@@ -2269,7 +2753,7 @@ app.post('/api/worksheets/ai-generate', adminOnly, async (req: AuthRequest, res:
     // Require each teacher to have their own API key configured
     if (!data.apiKey && req.session?.role !== 'superadmin') {
       return res.status(400).json({
-        error: 'API Key missing. Every teacher must add their own unique Gemini or OpenAI API Key in AI Settings before generating question papers.',
+        error: 'API Key missing. Every teacher must add their own unique Gemini, OpenAI, or DeepSeek API Key in AI Settings before generating question papers.',
       });
     }
 
@@ -2337,14 +2821,27 @@ ${generated.questions.map((q: any, idx: number) => `
 </div>`.trim();
     }
 
-    const paper = await prisma.worksheetPaper.create({
+    let teacherId: string | null = null;
+    if (req.session?.id) {
+      const teacher = await db.teacher.findUnique({ where: { id: req.session.id }, select: { id: true } });
+      if (teacher) {
+        teacherId = teacher.id;
+      } else if (req.session.email) {
+        const teacherByEmail = await db.teacher.findUnique({ where: { email: req.session.email }, select: { id: true } });
+        if (teacherByEmail) teacherId = teacherByEmail.id;
+      }
+    }
+
+    const normalizedGrade = normalizeGrade(data.grade) || data.grade;
+    const paper = await (prisma as any).worksheetPaper.create({
       data: {
-        title: `${data.subject}: ${data.topic} (${data.grade})`,
+        title: `${data.subject}: ${data.topic} (${normalizedGrade})`,
         subject: data.subject,
-        grade: data.grade,
+        grade: normalizedGrade,
         totalMarks: data.totalMarks,
         content: docHtml,
         status: 'PUBLISHED',
+        teacherId,
       },
     });
 
@@ -2364,6 +2861,9 @@ app.patch('/api/worksheets/:id', adminOnly, async (req: Request, res: Response) 
       status: z.enum(['DRAFT', 'PUBLISHED', 'ARCHIVED']).optional(),
     });
     const data = parse(schema, req.body);
+    if (data.grade !== undefined) {
+      data.grade = normalizeGrade(data.grade) || data.grade;
+    }
     const paper = await prisma.worksheetPaper.update({ where: { id }, data });
     res.json({ paper });
   } catch (error) { errorResponse(res, error); }

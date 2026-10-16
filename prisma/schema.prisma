@@ -40,6 +40,7 @@ model Teacher {
   students        Student[]
   quizzes         Quiz[]
   worksheetPapers WorksheetPaper[]
+  chatMessages    ChatMessage[]
 }
 
 model Student {
@@ -55,6 +56,7 @@ model Student {
   createdAt            DateTime              @default(now())
   attempts             Attempt[]
   worksheetSubmissions WorksheetSubmission[]
+  chatMessages         ChatMessage[]
 }
 
 model Quiz {
@@ -219,4 +221,22 @@ enum MaterialStatus {
   DRAFT
   PUBLISHED
   ARCHIVED
+}
+
+model ChatMessage {
+  id         String   @id @default(cuid())
+  teacherId  String
+  studentId  String?
+  senderId   String
+  senderName String
+  senderRole String   // 'teacher' | 'student' | 'admin' | 'superadmin'
+  channel    String   @default("everyone") // 'everyone' | 'direct'
+  content    String
+  createdAt  DateTime @default(now())
+
+  teacher    Teacher  @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  student    Student? @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([teacherId, channel, createdAt])
+  @@index([teacherId, studentId, channel, createdAt])
 }

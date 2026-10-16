@@ -5,6 +5,7 @@ import { AppWindow, ArrowLeft, ArrowRight, BarChart3, BookOpen, BookOpenCheck, C
 import { PublicPortal } from './components/PublicPortal';
 import { AuthModal, type AuthMode } from './components/AuthModal';
 import { SuperAdminConsole } from './components/SuperAdminConsole';
+import { ClassroomChatWidget } from './components/ClassroomChatWidget';
 
 type Mode = 'LIVE' | 'SELF_PACED';
 type QuestionType = 'MCQ' | 'FILL_BLANK' | 'TRUE_FALSE' | 'SOLVE';
@@ -201,14 +202,17 @@ function App() {
   // View 1: Super Admin Console
   if (view === 'superadmin' || user?.role === 'superadmin') {
     return (
-      <SuperAdminConsole
-        currentUser={user}
-        onSignOut={signOut}
-        onBackToPortal={() => {
-          setView('portal');
-          localStorage.removeItem('maths_mentor_view');
-        }}
-      />
+      <>
+        <SuperAdminConsole
+          currentUser={user}
+          onSignOut={signOut}
+          onBackToPortal={() => {
+            setView('portal');
+            localStorage.removeItem('maths_mentor_view');
+          }}
+        />
+        {user && <ClassroomChatWidget user={user} />}
+      </>
     );
   }
 
@@ -266,9 +270,16 @@ function App() {
   }
 
   // View 3: Logged in Dashboard (Teacher or Student)
-  return (user.role === 'admin' || user.role === 'teacher')
-    ? <TeacherApp user={user} onSignOut={signOut} notice={notice} setNotice={setNotice} onViewPortal={() => setView('portal')} />
-    : <StudentApp user={user} onSignOut={signOut} notice={notice} setNotice={setNotice} onViewPortal={() => setView('portal')} />;
+  return (
+    <>
+      {(user.role === 'admin' || user.role === 'teacher') ? (
+        <TeacherApp user={user} onSignOut={signOut} notice={notice} setNotice={setNotice} onViewPortal={() => setView('portal')} />
+      ) : (
+        <StudentApp user={user} onSignOut={signOut} notice={notice} setNotice={setNotice} onViewPortal={() => setView('portal')} />
+      )}
+      <ClassroomChatWidget user={user} />
+    </>
+  );
 }
 
 export function Login({ mode, onSubmit, error }: { mode: 'admin' | 'student'; onMode?: (mode: 'admin' | 'student') => void; onSubmit: (values: { email?: string; password?: string; passkey?: string }) => void; error: string }) {
@@ -641,16 +652,17 @@ function AISettingsPanel({ setNotice, user }: { setNotice: (msg: string) => void
           )}
 
           <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '12px', padding: '14px 16px', fontSize: '13px', color: '#334155', lineHeight: 1.5 }}>
-            <strong style={{ color: '#0f172a' }}>🔒 Teacher API Key Policy:</strong> Every teacher must provide their own unique Google Gemini or OpenAI API key. Duplication or sharing of API keys between teacher accounts is strictly prohibited by the system.
+            <strong style={{ color: '#0f172a' }}>🔒 Teacher API Key Policy:</strong> Every teacher must provide their own unique Google Gemini, OpenAI, or DeepSeek API key. Duplication or sharing of API keys between teacher accounts is strictly prohibited by the system.
           </div>
 
           <div className="form-grid-2">
             <label className="field compact-field">
               <span>AI Engine Provider</span>
               <select value={provider} onChange={(e) => setProvider(e.target.value)}>
-                <option value="auto">Auto Select (Google Gemini / OpenAI GPT)</option>
+                <option value="auto">Auto Select (Google Gemini / OpenAI GPT / DeepSeek)</option>
                 <option value="gemini">Google Gemini AI</option>
                 <option value="openai">ChatGPT (OpenAI GPT-4o)</option>
+                <option value="deepseek">DeepSeek AI (DeepSeek-V3 / R1)</option>
               </select>
               <small className="muted" style={{ marginTop: '4px' }}>
                 Select your preferred AI service provider.
@@ -664,7 +676,7 @@ function AISettingsPanel({ setNotice, user }: { setNotice: (msg: string) => void
                   type={showKey ? 'text' : 'password'}
                   value={apiKey}
                   onChange={(e) => { setApiKey(e.target.value); setKeyError(''); }}
-                  placeholder="Paste your unique Gemini or OpenAI API key..."
+                  placeholder="Paste your unique Gemini, OpenAI, or DeepSeek API key..."
                   style={{ flex: 1 }}
                 />
                 <button
@@ -697,7 +709,7 @@ function AISettingsPanel({ setNotice, user }: { setNotice: (msg: string) => void
             <div style={{ padding: '14px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '12px' }}>
               <span style={{ fontSize: '12px', color: '#64748b', fontWeight: 600 }}>Active Provider</span>
               <div style={{ fontSize: '15px', fontWeight: 700, color: '#0f172a', marginTop: '4px' }}>
-                {provider === 'gemini' ? 'Google Gemini AI' : provider === 'openai' ? 'ChatGPT (OpenAI)' : 'Auto (Gemini / GPT)'}
+                {provider === 'gemini' ? 'Google Gemini AI' : provider === 'openai' ? 'ChatGPT (OpenAI)' : provider === 'deepseek' ? 'DeepSeek AI (V3/R1)' : 'Auto (Gemini / GPT / DeepSeek)'}
               </div>
             </div>
             <div style={{ padding: '14px', background: apiKey ? '#f0fdf4' : '#fffbeb', border: apiKey ? '1px solid #bbf7d0' : '1px solid #fde68a', borderRadius: '12px' }}>
@@ -1193,7 +1205,7 @@ function AIQuizModal({ onClose, onGenerated, onNavigateToAISettings }: { onClose
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', background: hasTeacherKey === false ? '#fffbeb' : '#f0f9ff', border: hasTeacherKey === false ? '1px solid #fde68a' : '1px solid #bae6fd', borderRadius: '12px', color: hasTeacherKey === false ? '#92400e' : '#0369a1', fontSize: '13.5px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <Sparkles size={16} />
-          <span>AI Engine Settings: <strong>{provider === 'gemini' ? 'Google Gemini AI' : provider === 'openai' ? 'ChatGPT (OpenAI)' : 'Auto Select'}</strong> {hasTeacherKey ? '(Personal Key Active ✓)' : '(No Key Configured ⚠️)'}</span>
+          <span>AI Engine Settings: <strong>{provider === 'gemini' ? 'Google Gemini AI' : provider === 'openai' ? 'ChatGPT (OpenAI)' : provider === 'deepseek' ? 'DeepSeek AI' : 'Auto Select'}</strong> {hasTeacherKey ? '(Personal Key Active ✓)' : '(No Key Configured ⚠️)'}</span>
         </div>
         {onNavigateToAISettings && (
           <button type="button" className="text-button" style={{ fontSize: '12.5px', color: hasTeacherKey === false ? '#b45309' : '#0284c7', fontWeight: 600, padding: 0 }} onClick={onNavigateToAISettings}>
@@ -2942,14 +2954,14 @@ function WorksheetsPanel({ setNotice, onNavigateToAISettings }: { setNotice: (ms
               setEditingPaper({
                 title: 'New Question Paper',
                 subject: 'Science',
-                grade: 'Grade-6',
+                grade: 'Grade 6',
                 totalMarks: 100,
                 status: 'DRAFT',
                 content: `
 <div style="font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.5; color: #1e293b; width: 100%;">
   <div style="text-align: center; border-bottom: 2px solid #0f172a; padding-bottom: 10px; margin-bottom: 14px;">
     <h1 style="margin: 0; font-size: 22px; text-transform: uppercase; color: #0f172a; letter-spacing: 0.5px;">SCIENCE WORKSHEET PAPER</h1>
-    <h3 style="margin: 4px 0 0 0; color: #475569; font-weight: 500; font-size: 15px;">Grade-6 &nbsp;|&nbsp; Subject: Science</h3>
+    <h3 style="margin: 4px 0 0 0; color: #475569; font-weight: 500; font-size: 15px;">Grade 6 &nbsp;|&nbsp; Subject: Science</h3>
     <div style="display: flex; justify-content: space-between; margin-top: 10px; font-weight: 600; font-size: 13px; color: #334155;">
       <span>Time Allowed: 60 Mins</span>
       <span>Total Marks: 100</span>
@@ -3164,13 +3176,13 @@ const WORKSHEET_SUBJECTS = [
 ];
 
 const WORKSHEET_GRADES = [
-  'Grade-4',
-  'Grade-5',
-  'Grade-6',
-  'Grade-7',
-  'Grade-8',
-  'Grade-9',
-  'Grade-10',
+  'Grade 4',
+  'Grade 5',
+  'Grade 6',
+  'Grade 7',
+  'Grade 8',
+  'Grade 9',
+  'Grade 10',
   'Other / Custom Grade',
 ];
 
@@ -3224,16 +3236,16 @@ function WordDocEditorModal({
   });
 
   const normalizeGradeVal = (g?: string | null) => {
-    if (!g) return 'Grade-6';
-    const match = g.match(/Grade[- ]?(\d+)/i);
-    if (match) return `Grade-${match[1]}`;
+    if (!g) return 'Grade 6';
+    const match = g.match(/(?:grade|class)?\s*[- ]?\s*(\d+)/i);
+    if (match) return `Grade ${match[1]}`;
     return g;
   };
 
   const initialGradeNormalized = normalizeGradeVal(paper.grade);
   const isPredefinedGrade = WORKSHEET_GRADES.includes(initialGradeNormalized) && initialGradeNormalized !== 'Other / Custom Grade';
   const [gradeOption, setGradeOption] = useState<string>(() => {
-    if (!paper.grade) return 'Grade-6';
+    if (!paper.grade) return 'Grade 6';
     return isPredefinedGrade ? initialGradeNormalized : 'Other / Custom Grade';
   });
   const [customGrade, setCustomGrade] = useState<string>(() => {
@@ -3842,7 +3854,7 @@ function WordDocEditorModal({
 function AIWorksheetModal({ onClose, onGenerated, onNavigateToAISettings }: { onClose: () => void; onGenerated: () => void; onNavigateToAISettings?: () => void }) {
   const [selectedSubject, setSelectedSubject] = useState('Science');
   const [customSubject, setCustomSubject] = useState('');
-  const [grade, setGrade] = useState('Grade-6');
+  const [grade, setGrade] = useState('Grade 6');
   const [topic, setTopic] = useState('');
   const [subtopics, setSubtopics] = useState('');
   const [questionCount, setQuestionCount] = useState(10);
@@ -3912,7 +3924,7 @@ function AIWorksheetModal({ onClose, onGenerated, onNavigateToAISettings }: { on
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', background: hasTeacherKey === false ? '#fffbeb' : '#f0f9ff', border: hasTeacherKey === false ? '1px solid #fde68a' : '1px solid #bae6fd', borderRadius: '12px', color: hasTeacherKey === false ? '#92400e' : '#0369a1', fontSize: '13.5px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <Sparkles size={16} />
-          <span>AI Engine Settings: <strong>{provider === 'gemini' ? 'Google Gemini AI' : provider === 'openai' ? 'ChatGPT (OpenAI)' : 'Auto Select'}</strong> {hasTeacherKey ? '(Personal Key Active ✓)' : '(No Key Configured ⚠️)'}</span>
+          <span>AI Engine Settings: <strong>{provider === 'gemini' ? 'Google Gemini AI' : provider === 'openai' ? 'ChatGPT (OpenAI)' : provider === 'deepseek' ? 'DeepSeek AI' : 'Auto Select'}</strong> {hasTeacherKey ? '(Personal Key Active ✓)' : '(No Key Configured ⚠️)'}</span>
         </div>
         {onNavigateToAISettings && (
           <button type="button" className="text-button" style={{ fontSize: '12.5px', color: hasTeacherKey === false ? '#b45309' : '#0284c7', fontWeight: 600, padding: 0 }} onClick={onNavigateToAISettings}>

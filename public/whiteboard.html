@@ -910,6 +910,9 @@ body {
         <button class="top-bar__button" id="toggleRightPanelButton" title="Hide or show options panel">
           Toggle options
         </button>
+        <button class="top-bar__button" id="infiniteToggleBtn" title="Toggle between Standard Page (Fast) and Infinite Page (Tall)">
+          ⚡ Page: Standard
+        </button>
         <button class="top-bar__button" id="settingsButton" title="Settings">
           Settings
         </button>
@@ -1063,9 +1066,16 @@ body {
   let zoom = 1;
   let currentPageIndex = 0;
   let currentTool = "select";
-  const pages = [{ strokes: [], shapes: [], texts: [], widgets: [], background: null, height: 6000 }];
+  const defaultInfinite = localStorage.getItem("whiteboard_infinite_scroll") === "true";
+  const defaultPageHeight = defaultInfinite ? 2400 : 800;
+  const pages = [{ strokes: [], shapes: [], texts: [], widgets: [], background: null, height: defaultPageHeight, infiniteScroll: defaultInfinite }];
   let isDrawing = false;
   let isPanning = false;
+  let activeDrawingPointerId = null;
+  let activeDrawingPointerType = null;
+  let lastPenTime = 0;
+  let cachedCanvasRect = null;
+  let cachedBoardContext = null;
   let panStartScrollTop = 0;
   let panStartScrollLeft = 0;
   let panStartX = 0;
@@ -1177,7 +1187,25 @@ body {
             pages.length = 0;
             parsed.forEach((p) => {
               const copy = JSON.parse(JSON.stringify(p));
-              if (!copy.height) copy.height = 6000;
+              if (copy.infiniteScroll === undefined) {
+                copy.infiniteScroll = defaultInfinite;
+              }
+              if (copy.height && copy.height > 2400) {
+                let maxContentY = 800;
+                if (copy.strokes) {
+                  for (const st of copy.strokes) {
+                    if (st.points) for (const pt of st.points) { if (pt.y > maxContentY) maxContentY = pt.y; }
+                  }
+                }
+                if (copy.shapes) {
+                  for (const sh of copy.shapes) {
+                    if (sh.start && sh.start.y > maxContentY) maxContentY = sh.start.y;
+                    if (sh.end && sh.end.y > maxContentY) maxContentY = sh.end.y;
+                  }
+                }
+                copy.height = Math.max(copy.infiniteScroll ? 2400 : 800, Math.min(copy.height, Math.ceil(maxContentY + 500)));
+              }
+              if (!copy.height) copy.height = copy.infiniteScroll ? 2400 : 800;
               pages.push(copy);
             });
             if (currentPageIndex >= pages.length) currentPageIndex = Math.max(0, pages.length - 1);
@@ -1196,7 +1224,25 @@ body {
           pages.length = 0;
           parsed.forEach((p) => {
             const copy = JSON.parse(JSON.stringify(p));
-            if (!copy.height) copy.height = 6000;
+            if (copy.infiniteScroll === undefined) {
+              copy.infiniteScroll = defaultInfinite;
+            }
+            if (copy.height && copy.height > 2400) {
+              let maxContentY = 800;
+              if (copy.strokes) {
+                for (const st of copy.strokes) {
+                  if (st.points) for (const pt of st.points) { if (pt.y > maxContentY) maxContentY = pt.y; }
+                }
+              }
+              if (copy.shapes) {
+                for (const sh of copy.shapes) {
+                  if (sh.start && sh.start.y > maxContentY) maxContentY = sh.start.y;
+                  if (sh.end && sh.end.y > maxContentY) maxContentY = sh.end.y;
+                }
+              }
+              copy.height = Math.max(copy.infiniteScroll ? 2400 : 800, Math.min(copy.height, Math.ceil(maxContentY + 500)));
+            }
+            if (!copy.height) copy.height = copy.infiniteScroll ? 2400 : 800;
             pages.push(copy);
           });
           if (currentPageIndex >= pages.length) currentPageIndex = Math.max(0, pages.length - 1);
@@ -1379,25 +1425,28 @@ body {
   }
 
   function checkAndExpandInfiniteCanvas(currentY) {
+    if (isDrawing) return false; // NEVER expand while user is actively drawing a stroke!
     const page = pages[currentPageIndex];
     if (!page) return false;
+    if (page.infiniteScroll === false) return false; // Disabled by user
+
     const container = boardCanvas?.closest(".canvas-container");
     if (!container) return false;
-    const currentHeight = page.height || 6000;
-    if (currentHeight >= 50000) return false;
+    const currentHeight = page.height || 2400;
+    if (currentHeight >= 12000) return false; // Safe limit to prevent GPU crash
 
     let shouldExpand = false;
     const scrollBottom = container.scrollTop + container.clientHeight;
-    const scrollThreshold = (currentHeight * zoom) - 1200;
+    const scrollThreshold = (currentHeight * zoom) - 300;
     if (scrollBottom >= scrollThreshold) {
       shouldExpand = true;
     }
-    if (currentY != null && currentY >= currentHeight - 1000) {
+    if (currentY != null && currentY >= currentHeight - 300) {
       shouldExpand = true;
     }
 
     if (shouldExpand) {
-      page.height = currentHeight + 3000;
+      page.height = currentHeight + 1500;
       resizeCanvas();
       updateBoardAppearance();
       if (typeof customHeightInputEl !== "undefined" && customHeightInputEl) {
@@ -1412,13 +1461,19 @@ body {
     if (!boardCanvas) return;
     const wrapper = boardCanvas.closest(".canvas-wrapper");
     const container = boardCanvas.closest(".canvas-container");
+    const page = pages[currentPageIndex];
+    const isInfinite = page ? page.infiniteScroll !== false : defaultInfinite;
+    const minH = container ? Math.max(container.clientHeight, 600) : 600;
+
     if (container) {
       container.style.overflowX = zoom > 1 ? "auto" : "hidden";
+      container.style.overflowY = isInfinite ? "auto" : "hidden";
     }
     if (wrapper) {
-      const page = pages[currentPageIndex];
-      const minH = container ? Math.max(container.clientHeight - 8, 800) : 800;
-      const pageHeight = Math.max((page && page.height) ? page.height : 6000, minH);
+      let pageHeight = minH;
+      if (isInfinite) {
+        pageHeight = Math.max((page && page.height) ? page.height : 2400, minH);
+      }
       wrapper.style.height = (pageHeight * zoom) + "px";
       wrapper.style.width = zoom > 1 ? (zoom * 100) + "%" : "100%";
       wrapper.style.minWidth = "100%";
@@ -1426,6 +1481,7 @@ body {
       wrapper.style.margin = "0";
     }
     const rect = boardCanvas.getBoundingClientRect();
+    cachedCanvasRect = rect;
     const scale = window.devicePixelRatio || 1;
     boardCanvas.width = rect.width * scale;
     boardCanvas.height = rect.height * scale;
@@ -6304,7 +6360,10 @@ body {
   function addNewPage() {
     const newIndex = pages.length;
     const curPage = pages[currentPageIndex];
-    const newPage = { strokes: [], shapes: [], texts: [], widgets: [], background: null, height: 6000 };
+    const isInfinite = localStorage.getItem("whiteboard_infinite_scroll") === "true";
+    const container = boardCanvas?.closest(".canvas-container");
+    const standardH = container ? Math.max(container.clientHeight, 600) : 800;
+    const newPage = { strokes: [], shapes: [], texts: [], widgets: [], background: null, height: isInfinite ? 2400 : standardH, infiniteScroll: isInfinite };
     if (curPage) {
       (curPage.widgets || []).filter((w) => w.type === "clock" || w.type === "timer" || w.type === "stopwatch").forEach((w) => {
         newPage.widgets.push(cloneTimeWidgetForOtherPage(w));
@@ -6332,18 +6391,30 @@ body {
     const container = boardCanvas?.closest(".canvas-container");
     if (container) container.scrollTop = 0;
     if (typeof hideSettingsBanner === "function") hideSettingsBanner();
+    if (typeof updateInfiniteToggleBtn === "function") updateInfiniteToggleBtn();
     updateBoardAppearance();
     if (currentTool === "select" && propertiesContent) handleToolSelection("select");
   }
 
-  function getCanvasPoint(evt) {
-    const rect = boardCanvas.getBoundingClientRect();
+  function updateCanvasRect() {
+    if (boardCanvas) {
+      cachedCanvasRect = boardCanvas.getBoundingClientRect();
+    }
+  }
+
+  function getCanvasPoint(evt, forceFreshRect) {
+    if (!cachedCanvasRect || forceFreshRect) {
+      updateCanvasRect();
+    }
+    const rect = cachedCanvasRect || (boardCanvas ? boardCanvas.getBoundingClientRect() : { left: 0, top: 0, width: 800, height: 600 });
     const scale = window.devicePixelRatio || 1;
     const logicalWidth = boardCanvas.width / scale;
     const logicalHeight = boardCanvas.height / scale;
 
-    const xRatio = (evt.clientX - rect.left) / rect.width;
-    const yRatio = (evt.clientY - rect.top) / rect.height;
+    const rw = rect.width || 1;
+    const rh = rect.height || 1;
+    const xRatio = (evt.clientX - rect.left) / rw;
+    const yRatio = (evt.clientY - rect.top) / rh;
 
     return {
       x: (xRatio * logicalWidth) / zoom,
@@ -6384,7 +6455,14 @@ body {
 
   function getBoardContext() {
     if (!boardCanvas) return null;
-    const ctx = boardCanvas.getContext("2d");
+    if (!cachedBoardContext) {
+      try {
+        cachedBoardContext = boardCanvas.getContext("2d", { desynchronized: true });
+      } catch (_) {
+        cachedBoardContext = boardCanvas.getContext("2d");
+      }
+    }
+    const ctx = cachedBoardContext || boardCanvas.getContext("2d");
     if (!ctx) return null;
     const scale = window.devicePixelRatio || 1;
     ctx.setTransform(scale * zoom, 0, 0, scale * zoom, 0, 0);
@@ -6951,9 +7029,44 @@ body {
 
   function handlePointerDown(evt) {
     if (!boardCanvas) return;
-    if (evt.pointerType === "touch") return; /* tablet: we use touch handlers instead */
+
+    // Palm rejection & Stylus/Pen Priority
+    if (evt.pointerType === "pen") {
+      lastPenTime = Date.now();
+      // If a finger touch stroke was initiated right before the pen arrived (within 800ms or <= 3 points),
+      // it was almost certainly the user's palm resting on the glass before the pen touched!
+      // Cancel and remove that accidental touch stroke!
+      if (activeDrawingPointerType === "touch" && activeStroke) {
+        const page = pages[currentPageIndex];
+        if (page && page.strokes && page.strokes[page.strokes.length - 1] === activeStroke) {
+          page.strokes.pop();
+        }
+        activeStroke = null;
+        isDrawing = false;
+        updateBoardAppearance();
+      }
+      activeDrawingPointerId = evt.pointerId;
+      activeDrawingPointerType = "pen";
+    } else if (evt.pointerType === "touch") {
+      // 1) Palm rejection: if pen was used recently (within 1.2s), reject finger touch
+      if (Date.now() - lastPenTime < 1200) return;
+      // 2) Reject palm contacts based on contact geometry (major radius / width / height)
+      if ((evt.width && evt.width > 35) || (evt.height && evt.height > 35)) return;
+      // 3) Reject secondary fingers / palm contacts (only accept primary touch)
+      if (!evt.isPrimary) return;
+      // 4) If already drawing with another pointer, reject
+      if (activeDrawingPointerId !== null && activeDrawingPointerId !== evt.pointerId) return;
+      activeDrawingPointerId = evt.pointerId;
+      activeDrawingPointerType = "touch";
+    } else if (evt.pointerType === "mouse") {
+      if (evt.button !== 0) return;
+      activeDrawingPointerId = evt.pointerId;
+      activeDrawingPointerType = "mouse";
+    }
+
     if (typeof evt.preventDefault === "function") evt.preventDefault();
     try { boardCanvas.setPointerCapture(evt.pointerId); } catch (_) {}
+    updateCanvasRect();
 
     if (currentTool === "hand") {
       const container = boardCanvas.closest(".canvas-container");
@@ -6986,7 +7099,6 @@ body {
       pushUndo();
       isDrawing = true;
       const point = getCanvasPoint(evt);
-      checkAndExpandInfiniteCanvas(point.y);
       const settings = currentTool === "pen" ? penSettings : highlighterSettings;
       const color = settings.color;
       const alpha = currentTool === "pen" ? 1 : settings.alpha ?? 0.4;
@@ -7358,7 +7470,7 @@ body {
   }
 
   function handlePointerMove(evt) {
-    if (evt.pointerType === "touch") return; /* tablet: we use touch handlers instead */
+    if (activeDrawingPointerId !== null && evt.pointerId !== activeDrawingPointerId) return;
     if (isPanning && currentTool === "hand") {
       const container = boardCanvas.closest(".canvas-container");
       if (container) {
@@ -7521,15 +7633,16 @@ body {
 
     if (currentTool === "pen" || currentTool === "highlighter") {
       if (!activeStroke) return;
+      // Palm rejection / pointer ID validation
+      if (activeDrawingPointerId !== null && evt.pointerId !== activeDrawingPointerId) return;
+
       const rawEvents = (typeof evt.getCoalescedEvents === "function") ? evt.getCoalescedEvents() : null;
       const events = (rawEvents && rawEvents.length > 0) ? rawEvents : [evt];
       const pts = activeStroke.points;
-      let maxY = 0;
       let addedAny = false;
 
       for (let i = 0; i < events.length; i++) {
         const point = getCanvasPoint(events[i]);
-        if (point.y > maxY) maxY = point.y;
         const last = pts[pts.length - 1];
         if (!last) {
           pts.push(point);
@@ -7537,22 +7650,15 @@ body {
         } else {
           const dx = point.x - last.x;
           const dy = point.y - last.y;
-          // Capture points at smooth distance threshold ~2px to eliminate sensor jitter
-          if (dx * dx + dy * dy >= 4.0) {
+          // Capture sub-pixel nuances (0.5px) for natural, silky-smooth cursive writing
+          if (dx * dx + dy * dy >= 0.25) {
             pts.push(point);
             addedAny = true;
           }
         }
       }
 
-      let canvasExpanded = false;
-      if (maxY > 0) {
-        canvasExpanded = checkAndExpandInfiniteCanvas(maxY);
-      }
-
-      if (canvasExpanded) {
-        activeStroke._drawnCount = pts.length;
-      } else if (addedAny) {
+      if (addedAny) {
         drawIncrementalStroke(activeStroke);
       }
     } else if (currentTool === "eraser") {
@@ -7632,9 +7738,37 @@ body {
     }
   }
 
+  function handlePointerCancel(evt) {
+    if (!boardCanvas) return;
+    if (activeDrawingPointerId !== null && evt.pointerId !== activeDrawingPointerId) return;
+    activeDrawingPointerId = null;
+    activeDrawingPointerType = null;
+    try { boardCanvas.releasePointerCapture(evt.pointerId); } catch (_) {}
+    isPanning = false;
+    isDrawing = false;
+    isDraggingShape = false;
+    isDraggingWidget = false;
+    dragShapeStartPoint = null;
+    dragShapeOriginals = null;
+    dragGroupChildrenOriginals = null;
+    dragWidgetOriginals = null;
+    dragTextOriginals = null;
+    if (activeStroke) {
+      const page = pages[currentPageIndex];
+      if (page && page.strokes && page.strokes[page.strokes.length - 1] === activeStroke) {
+        page.strokes.pop();
+      }
+      activeStroke = null;
+      updateBoardAppearance();
+    }
+    activeShape = null;
+  }
+
   function handlePointerUp(evt) {
     if (!boardCanvas) return;
-    if (evt.pointerType === "touch") return; /* tablet: we use touch handlers instead */
+    if (activeDrawingPointerId !== null && evt.pointerId !== activeDrawingPointerId) return;
+    activeDrawingPointerId = null;
+    activeDrawingPointerType = null;
     try { boardCanvas.releasePointerCapture(evt.pointerId); } catch (_) {}
     if (isPanning && currentTool === "hand") {
       isPanning = false;
@@ -7709,13 +7843,26 @@ body {
       if (!last || (endPt.x !== last.x || endPt.y !== last.y)) {
         const dx = endPt.x - (last ? last.x : 0);
         const dy = endPt.y - (last ? last.y : 0);
-        if (dx * dx + dy * dy >= 4.0) {
+        if (dx * dx + dy * dy >= 0.25) {
           pts.push(endPt);
         }
       }
       finishActiveStroke(activeStroke);
+      const finishedPts = activeStroke.points;
       activeStroke = null;
       activeShape = null;
+
+      // Expand canvas ONLY after stroke is safely completed (never during writing)
+      if (finishedPts && finishedPts.length > 0) {
+        let maxStrokeY = 0;
+        for (let i = 0; i < finishedPts.length; i++) {
+          if (finishedPts[i].y > maxStrokeY) maxStrokeY = finishedPts[i].y;
+        }
+        if (maxStrokeY > 0) {
+          checkAndExpandInfiniteCanvas(maxStrokeY);
+        }
+      }
+
       clearTimeout(savePagesTimeout);
       savePagesTimeout = setTimeout(savePagesToStorage, 800);
       return;
@@ -8165,7 +8312,7 @@ body {
       imageCache.delete(page.background.dataUrl);
     }
     page.background = null;
-    page.height = 6000;
+    page.height = page.infiniteScroll !== false ? 2400 : 1400;
     selectedShapes = [];
     selectedTexts = [];
     selectedWidgets = [];
@@ -8259,6 +8406,37 @@ body {
   const heightInputSpanEl = document.getElementById("heightInputSpan");
   const customHeightInputEl = document.getElementById("customHeightInput");
   const settingsCloseBtnEl = document.getElementById("settingsCloseBtn");
+  const infiniteToggleBtn = document.getElementById("infiniteToggleBtn");
+
+  function updateInfiniteToggleBtn() {
+    const page = pages[currentPageIndex];
+    const isInfinite = page ? page.infiniteScroll !== false : false;
+    if (infiniteToggleBtn) {
+      infiniteToggleBtn.textContent = isInfinite ? "📜 Page: Infinite" : "⚡ Page: Standard";
+      infiniteToggleBtn.title = isInfinite
+        ? "Infinite Scroll is ON (canvas expands as you scroll). Click to switch to Standard fixed page for maximum speed."
+        : "Standard Page is ON (fixed height, zero scroll lag). Click to switch to Infinite scroll page.";
+      infiniteToggleBtn.style.color = isInfinite ? "#38bdf8" : "#94a3b8";
+    }
+  }
+
+  infiniteToggleBtn?.addEventListener("click", () => {
+    const page = pages[currentPageIndex];
+    if (!page) return;
+    const nextState = page.infiniteScroll === false;
+    page.infiniteScroll = nextState;
+    localStorage.setItem("whiteboard_infinite_scroll", String(nextState));
+    if (nextState) {
+      page.height = Math.max(page.height || 2400, 2400);
+    } else {
+      const container = boardCanvas.closest(".canvas-container");
+      page.height = container ? container.clientHeight : 800;
+    }
+    updateInfiniteToggleBtn();
+    syncSettingsBannerState();
+    resizeCanvas();
+    updateBoardAppearance();
+  });
 
   function hideSettingsBanner() {
     if (settingsBannerEl) {
@@ -8270,9 +8448,13 @@ body {
   function syncSettingsBannerState() {
     const page = pages[currentPageIndex];
     if (!page) return;
-    infiniteScrollToggleEl.checked = true;
-    heightInputSpanEl.style.display = "inline-flex";
-    customHeightInputEl.value = String(page.height || 6000);
+    const isInfinite = page.infiniteScroll !== false;
+    const container = boardCanvas?.closest(".canvas-container");
+    const standardH = container ? container.clientHeight : 800;
+    if (infiniteScrollToggleEl) infiniteScrollToggleEl.checked = isInfinite;
+    if (heightInputSpanEl) heightInputSpanEl.style.display = isInfinite ? "inline-flex" : "none";
+    if (customHeightInputEl) customHeightInputEl.value = String(page.height || (isInfinite ? 2400 : standardH));
+    updateInfiniteToggleBtn();
   }
 
   settingsButtonEl?.addEventListener("click", () => {
@@ -8289,14 +8471,19 @@ body {
   infiniteScrollToggleEl?.addEventListener("change", () => {
     const page = pages[currentPageIndex];
     if (!page) return;
-    if (infiniteScrollToggleEl.checked) {
-      const height = Number(customHeightInputEl.value) || 6000;
+    const isInfinite = infiniteScrollToggleEl.checked;
+    page.infiniteScroll = isInfinite;
+    localStorage.setItem("whiteboard_infinite_scroll", String(isInfinite));
+    if (isInfinite) {
+      const height = Number(customHeightInputEl.value) || 2400;
       page.height = height;
       heightInputSpanEl.style.display = "inline-flex";
     } else {
-      page.height = 1400;
+      const container = boardCanvas.closest(".canvas-container");
+      page.height = container ? container.clientHeight : 800;
       heightInputSpanEl.style.display = "none";
     }
+    updateInfiniteToggleBtn();
     resizeCanvas();
     updateBoardAppearance();
   });
@@ -8304,7 +8491,7 @@ body {
   customHeightInputEl?.addEventListener("change", () => {
     const page = pages[currentPageIndex];
     if (!page) return;
-    const height = Number(customHeightInputEl.value) || 6000;
+    const height = Number(customHeightInputEl.value) || 2400;
     page.height = height;
     resizeCanvas();
     updateBoardAppearance();
@@ -8462,54 +8649,47 @@ body {
     }
   });
 
-  function syntheticPointerEvt(touch) {
-    return {
-      clientX: touch.clientX,
-      clientY: touch.clientY,
-      pointerId: touch.identifier,
-      pointerType: "",
-      shiftKey: false,
-      preventDefault() {},
-      stopPropagation() {},
-    };
-  }
   if (boardCanvas) {
     boardCanvas.addEventListener("pointerdown", handlePointerDown);
     boardCanvas.addEventListener("pointermove", handlePointerMove);
     boardCanvas.addEventListener("pointerup", handlePointerUp);
-    boardCanvas.addEventListener("pointercancel", handlePointerUp);
-    var touchOpt = { passive: false, capture: true };
-    var wrapper = boardCanvas.closest(".canvas-wrapper");
-    function isOnCanvasArea(el) {
-      return el === boardCanvas || (wrapper && wrapper.contains(el));
-    }
+    boardCanvas.addEventListener("pointercancel", handlePointerCancel);
+    window.addEventListener("pointerup", (e) => {
+      if (isDrawing && activeDrawingPointerId === e.pointerId) handlePointerUp(e);
+    });
+    window.addEventListener("pointercancel", (e) => {
+      if (isDrawing && activeDrawingPointerId === e.pointerId) handlePointerCancel(e);
+    });
+    var touchOpt = { passive: false };
     function onTouchStart(e) {
-      if (!isOnCanvasArea(e.target)) return;
-      e.preventDefault();
-      e.stopPropagation();
-      if (e.touches.length === 2) {
-        // start pinch-zoom
+      if (e.touches.length >= 2) {
+        // 2-finger gesture: pinch-zoom
+        e.preventDefault();
         var t1 = e.touches[0];
         var t2 = e.touches[1];
         var dx = t2.clientX - t1.clientX;
         var dy = t2.clientY - t1.clientY;
         pinchStartDistance = Math.sqrt(dx * dx + dy * dy) || null;
         pinchStartZoom = zoom;
-        activeTouchId = null; // disable drawing while pinching
+
+        // If a stroke was started just as second finger touched, cancel the accidental touch stroke
+        if (activeStroke && activeStroke.points && activeStroke.points.length <= 4) {
+          const page = pages[currentPageIndex];
+          if (page && page.strokes && page.strokes[page.strokes.length - 1] === activeStroke) {
+            page.strokes.pop();
+          }
+          activeStroke = null;
+          isDrawing = false;
+          updateBoardAppearance();
+        }
         return;
       }
-      if (e.touches.length === 1) {
-        pinchStartDistance = null;
-        var t = e.touches[0];
-        activeTouchId = t.identifier;
-        handlePointerDown(syntheticPointerEvt(t));
-      }
+      // Single touch is handled natively by Pointer Events (handlePointerDown).
+      // DO NOT call handlePointerDown here to prevent duplicate strokes, phantom dots, and stray lines!
     }
     function onTouchMove(e) {
-      if (!isOnCanvasArea(e.target)) return;
-      e.preventDefault();
-      e.stopPropagation();
-      if (e.touches.length === 2 && pinchStartDistance != null) {
+      if (e.touches.length >= 2 && pinchStartDistance != null) {
+        e.preventDefault();
         var t1 = e.touches[0];
         var t2 = e.touches[1];
         var dx = t2.clientX - t1.clientX;
@@ -8521,37 +8701,16 @@ body {
         }
         return;
       }
-      if (activeTouchId == null) return;
-      var t = Array.from(e.touches).find(function (x) { return x.identifier === activeTouchId; });
-      if (!t) return;
-      handlePointerMove(syntheticPointerEvt(t));
     }
     function onTouchEnd(e) {
-      if (!isOnCanvasArea(e.target)) return;
-      e.preventDefault();
-      e.stopPropagation();
       if (e.touches.length < 2) {
         pinchStartDistance = null;
-      }
-      var t = Array.from(e.changedTouches || []).find(function (x) { return x.identifier === activeTouchId; });
-      if (t && activeTouchId != null) {
-        handlePointerUp(syntheticPointerEvt(t));
-        try { boardCanvas.releasePointerCapture(t.identifier); } catch (_) {}
-      }
-      if (e.touches.length === 0) {
-        activeTouchId = null;
       }
     }
     boardCanvas.addEventListener("touchstart", onTouchStart, touchOpt);
     boardCanvas.addEventListener("touchmove", onTouchMove, touchOpt);
     boardCanvas.addEventListener("touchend", onTouchEnd, touchOpt);
     boardCanvas.addEventListener("touchcancel", onTouchEnd, touchOpt);
-    if (wrapper && wrapper !== boardCanvas) {
-      wrapper.addEventListener("touchstart", onTouchStart, touchOpt);
-      wrapper.addEventListener("touchmove", onTouchMove, touchOpt);
-      wrapper.addEventListener("touchend", onTouchEnd, touchOpt);
-      wrapper.addEventListener("touchcancel", onTouchEnd, touchOpt);
-    }
 
     // Wheel event: smooth vertical scrolling and Ctrl+wheel zooming
     boardCanvas.addEventListener("wheel", (e) => {
@@ -8563,7 +8722,8 @@ body {
         const container = boardCanvas.closest(".canvas-container");
         if (container) {
           container.scrollTop += e.deltaY;
-          checkAndExpandInfiniteCanvas();
+          cachedCanvasRect = null;
+          if (!isDrawing) checkAndExpandInfiniteCanvas();
           e.preventDefault();
         }
       }
@@ -8574,7 +8734,8 @@ body {
     const scrollTopBtnEl = document.getElementById("scrollTopBtn");
     if (canvasContainerEl) {
       canvasContainerEl.addEventListener("scroll", () => {
-        checkAndExpandInfiniteCanvas();
+        cachedCanvasRect = null;
+        if (!isDrawing) checkAndExpandInfiniteCanvas();
         if (scrollTopBtnEl) {
           if (canvasContainerEl.scrollTop > 450) {
             scrollTopBtnEl.classList.add("is-visible");
@@ -8603,6 +8764,7 @@ body {
     resizeCanvas();
     setBoardType("white");
     updateZoomLabel();
+    if (typeof updateInfiniteToggleBtn === "function") updateInfiniteToggleBtn();
     handleToolSelection("select");
   });
 })();
