@@ -8498,26 +8498,36 @@ button:disabled {
   font-size: 12px;
   color: #475569;
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .chat-direct-student-info {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   font-weight: 500;
+  text-align: center;
 }
 
 .chat-direct-teacher-selector {
   display: flex;
   flex-direction: column;
+  align-items: center;
+  justify-content: center;
   gap: 6px;
+  width: 100%;
 }
 
 .chat-selector-row {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   flex-wrap: wrap;
+  width: 100%;
 }
 
 .chat-selector-label {
@@ -8534,6 +8544,7 @@ button:disabled {
   font-size: 12px;
   color: #94a3b8;
   font-style: italic;
+  text-align: center;
 }
 
 .chat-student-select-wrap {
@@ -8549,13 +8560,15 @@ button:disabled {
   min-width: 120px;
   max-width: 175px;
   height: 28px;
-  padding: 3px 22px 3px 8px;
+  padding: 3px 22px 3px 10px;
   background: #ffffff;
   border: 1px solid #cbd5e1;
   border-radius: 6px;
   font-size: 12px;
   font-weight: 600;
   color: #1e293b;
+  text-align: center;
+  text-align-last: center;
   text-overflow: ellipsis;
   overflow: hidden;
   white-space: nowrap;
