@@ -54,6 +54,12 @@ interface ClassroomChatWidgetProps {
 
 const QUICK_REACTIONS = ['👍', '✋', '💡', '❓', '📐', '⭐', '👏', '😊'];
 
+function formatGradeBracket(grade?: string | null): string {
+  if (!grade) return '';
+  const cleaned = grade.replace(/^grade\s*/i, '').replace(/^gr\.?\s*/i, '').trim();
+  return cleaned ? ` (${cleaned})` : '';
+}
+
 export function ClassroomChatWidget({ user }: ClassroomChatWidgetProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [isMinimized, setIsMinimized] = useState(false);
@@ -421,7 +427,7 @@ export function ClassroomChatWidget({ user }: ClassroomChatWidgetProps) {
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
       });
-      if (!res.ok) {
+      if (!res.ok && res.status !== 404) {
         const data = await res.json().catch(() => ({}));
         alert(data.error || 'Failed to delete message.');
         // Re-fetch to sync state if deletion failed
@@ -616,7 +622,7 @@ export function ClassroomChatWidget({ user }: ClassroomChatWidgetProps) {
                     <div className="chat-direct-teacher-selector">
                       <div className="chat-selector-row">
                         <label htmlFor="chatStudentSelect" className="chat-selector-label">
-                          Select Student:
+                          Student:
                         </label>
                         {students.length === 0 ? (
                           <span className="chat-no-students-label">No students enrolled yet</span>
@@ -630,8 +636,8 @@ export function ClassroomChatWidget({ user }: ClassroomChatWidgetProps) {
                             >
                               {students.map((st) => {
                                 const unread = studentUnreadMap[st.id] || 0;
-                                const unreadLabel = unread > 0 ? ` (${unread} new)` : '';
-                                const gradeLabel = st.grade ? ` • Grade ${st.grade}` : '';
+                                const unreadLabel = unread > 0 ? ` [${unread} new]` : '';
+                                const gradeLabel = formatGradeBracket(st.grade);
                                 return (
                                   <option key={st.id} value={st.id}>
                                     {st.name}{gradeLabel}{unreadLabel}
@@ -639,7 +645,7 @@ export function ClassroomChatWidget({ user }: ClassroomChatWidgetProps) {
                                 );
                               })}
                             </select>
-                            <ChevronDown size={14} className="chat-select-chevron" />
+                            <ChevronDown size={13} className="chat-select-chevron" />
                           </div>
                         )}
                         {selectedStudentId && (studentUnreadMap[selectedStudentId] || 0) > 0 ? (

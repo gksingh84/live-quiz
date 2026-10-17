@@ -8517,7 +8517,7 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
+  flex-wrap: wrap;
 }
 
 .chat-selector-label {
@@ -8538,20 +8538,27 @@ button:disabled {
 
 .chat-student-select-wrap {
   position: relative;
-  flex: 1;
-  display: flex;
+  display: inline-flex;
   align-items: center;
+  max-width: 175px;
+  width: auto;
 }
 
 .chat-student-dropdown {
-  width: 100%;
-  padding: 6px 28px 6px 10px;
+  width: auto;
+  min-width: 120px;
+  max-width: 175px;
+  height: 28px;
+  padding: 3px 22px 3px 8px;
   background: #ffffff;
   border: 1px solid #cbd5e1;
-  border-radius: 8px;
-  font-size: 13px;
+  border-radius: 6px;
+  font-size: 12px;
   font-weight: 600;
   color: #1e293b;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
   appearance: none;
   -webkit-appearance: none;
   outline: none;
@@ -8571,7 +8578,7 @@ button:disabled {
 
 .chat-select-chevron {
   position: absolute;
-  right: 9px;
+  right: 7px;
   pointer-events: none;
   color: #64748b;
 }

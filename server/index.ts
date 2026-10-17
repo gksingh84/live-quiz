@@ -2601,14 +2601,12 @@ app.delete('/api/chat/messages/:id', authenticate(), async (req: AuthRequest, re
 
     if (role === 'superadmin') {
       allowed = true;
+    } else if (message.senderId === session.id) {
+      // Sender (teacher or kid) can always delete their own message sent by mistake
+      allowed = true;
     } else if (role === 'teacher' || role === 'admin') {
       const teacherId = await resolveTeacherIdForChat(req);
-      if (teacherId && message.teacherId === teacherId) {
-        allowed = true;
-      }
-    } else if (role === 'student') {
-      // Students (kids) can delete messages sent by themselves if sent by mistake
-      if (message.senderId === session.id) {
+      if (teacherId && (message.teacherId === teacherId || message.senderId === teacherId)) {
         allowed = true;
       }
     }
@@ -2617,7 +2615,7 @@ app.delete('/api/chat/messages/:id', authenticate(), async (req: AuthRequest, re
       return res.status(403).json({ error: 'You are not authorized to delete this message.' });
     }
 
-    await (prisma as any).chatMessage.delete({
+    await (prisma as any).chatMessage.deleteMany({
       where: { id },
     });
 
