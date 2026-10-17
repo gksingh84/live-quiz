@@ -2744,7 +2744,7 @@ function StudentApp({ user, onSignOut, notice, setNotice, onViewPortal }: { user
           </div>
         </header>
 
-        <section className="student-home-content" style={{ maxWidth: tab === 'calendar' ? '1280px' : '960px', padding: tab === 'calendar' ? '24px 32px' : '32px 40px' }}>
+        <section className={tab === 'calendar' ? 'content-area student-home-content--calendar' : 'student-home-content'}>
           {error && <div className="inline-error" style={{ marginBottom: '20px' }}>{error}</div>}
 
           {loading ? (
