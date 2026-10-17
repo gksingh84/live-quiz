@@ -41,6 +41,7 @@ model Teacher {
   quizzes         Quiz[]
   worksheetPapers WorksheetPaper[]
   chatMessages    ChatMessage[]
+  calendarEvents  CalendarEvent[]
 }
 
 model Student {
@@ -240,3 +241,21 @@ model ChatMessage {
   @@index([teacherId, channel, createdAt])
   @@index([teacherId, studentId, channel, createdAt])
 }
+
+model CalendarEvent {
+  id          String   @id @default(cuid())
+  teacherId   String
+  title       String
+  description String?
+  date        String   // "YYYY-MM-DD"
+  time        String?  // Optional time string like "10:00 AM"
+  type        String   @default("event") // "event" | "reminder" | "quiz" | "test" | "assignment" | "holiday"
+  color       String?  @default("#0284c7")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  teacher     Teacher  @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+
+  @@index([teacherId, date])
+}
+

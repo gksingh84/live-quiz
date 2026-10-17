@@ -2663,6 +2663,171 @@ app.delete('/api/chat/messages', authenticate(['admin', 'teacher', 'superadmin']
   }
 });
 
+// --- CLASSROOM CALENDAR & REMINDER ROUTES ---
+
+app.get('/api/calendar/events', authenticate(), async (req: AuthRequest, res: Response) => {
+  try {
+    const role = req.session!.role;
+    let teacherId: string | null = null;
+
+    if (role === 'student') {
+      const student = await prisma.student.findUnique({
+        where: { id: req.session!.id },
+        select: { teacherId: true },
+      });
+      teacherId = student?.teacherId || null;
+      if (!teacherId) {
+        return res.json({ events: [] });
+      }
+    } else {
+      teacherId = await resolveTeacherIdForChat(req);
+      if (!teacherId) {
+        return res.json({ events: [] });
+      }
+    }
+
+    const { month, from, to } = req.query;
+    const where: any = { teacherId };
+
+    if (month && typeof month === 'string') {
+      where.date = { startsWith: month };
+    } else if (from || to) {
+      where.date = {};
+      if (from) where.date.gte = String(from);
+      if (to) where.date.lte = String(to);
+    }
+
+    const events = await (prisma as any).calendarEvent.findMany({
+      where,
+      orderBy: [{ date: 'asc' }, { time: 'asc' }, { createdAt: 'asc' }],
+    });
+
+    return res.json({ events });
+  } catch (error) {
+    errorResponse(res, error);
+  }
+});
+
+app.post('/api/calendar/events', authenticate(['teacher', 'admin', 'superadmin']), async (req: AuthRequest, res: Response) => {
+  try {
+    const teacherId = await resolveTeacherIdForChat(req);
+    if (!teacherId) {
+      return res.status(403).json({ error: 'Only teachers can add events and reminders.' });
+    }
+
+    const data = parse(
+      z.object({
+        title: z.string().trim().min(1, 'Title is required').max(200, 'Title is too long'),
+        description: z.string().trim().max(2000).optional().nullable(),
+        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be in YYYY-MM-DD format'),
+        time: z.string().trim().max(50).optional().nullable(),
+        type: z.enum(['event', 'reminder', 'quiz', 'test', 'assignment', 'holiday']).default('event'),
+        color: z.string().trim().max(30).optional().nullable(),
+      }),
+      req.body
+    );
+
+    const event = await (prisma as any).calendarEvent.create({
+      data: {
+        teacherId,
+        title: data.title,
+        description: data.description || null,
+        date: data.date,
+        time: data.time || null,
+        type: data.type,
+        color: data.color || '#0284c7',
+      },
+    });
+
+    // Real-time broadcast so connected students see it instantly
+    io.to(`chat:${teacherId}:everyone`).emit('calendar:event_created', event);
+
+    return res.status(201).json({ event });
+  } catch (error) {
+    errorResponse(res, error);
+  }
+});
+
+app.put('/api/calendar/events/:id', authenticate(['teacher', 'admin', 'superadmin']), async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ error: 'Event ID is required.' });
+
+    const teacherId = await resolveTeacherIdForChat(req);
+    if (!teacherId) {
+      return res.status(403).json({ error: 'Only teachers can edit events and reminders.' });
+    }
+
+    const existing = await (prisma as any).calendarEvent.findUnique({ where: { id } });
+    if (!existing) {
+      return res.status(404).json({ error: 'Event not found.' });
+    }
+
+    if (req.session?.role !== 'superadmin' && existing.teacherId !== teacherId) {
+      return res.status(403).json({ error: 'You are not authorized to edit this event.' });
+    }
+
+    const data = parse(
+      z.object({
+        title: z.string().trim().min(1, 'Title is required').max(200, 'Title is too long'),
+        description: z.string().trim().max(2000).optional().nullable(),
+        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be in YYYY-MM-DD format'),
+        time: z.string().trim().max(50).optional().nullable(),
+        type: z.enum(['event', 'reminder', 'quiz', 'test', 'assignment', 'holiday']).default('event'),
+        color: z.string().trim().max(30).optional().nullable(),
+      }),
+      req.body
+    );
+
+    const updated = await (prisma as any).calendarEvent.update({
+      where: { id },
+      data: {
+        title: data.title,
+        description: data.description || null,
+        date: data.date,
+        time: data.time || null,
+        type: data.type,
+        color: data.color || existing.color || '#0284c7',
+      },
+    });
+
+    io.to(`chat:${teacherId}:everyone`).emit('calendar:event_updated', updated);
+
+    return res.json({ event: updated });
+  } catch (error) {
+    errorResponse(res, error);
+  }
+});
+
+app.delete('/api/calendar/events/:id', authenticate(['teacher', 'admin', 'superadmin']), async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ error: 'Event ID is required.' });
+
+    const teacherId = await resolveTeacherIdForChat(req);
+    if (!teacherId) {
+      return res.status(403).json({ error: 'Only teachers can delete events and reminders.' });
+    }
+
+    const existing = await (prisma as any).calendarEvent.findUnique({ where: { id } });
+    if (!existing) {
+      return res.status(404).json({ error: 'Event not found or already deleted.' });
+    }
+
+    if (req.session?.role !== 'superadmin' && existing.teacherId !== teacherId) {
+      return res.status(403).json({ error: 'You are not authorized to delete this event.' });
+    }
+
+    await (prisma as any).calendarEvent.deleteMany({ where: { id } });
+
+    io.to(`chat:${teacherId}:everyone`).emit('calendar:event_deleted', { eventId: id, teacherId });
+
+    return res.json({ ok: true, deletedId: id });
+  } catch (error) {
+    errorResponse(res, error);
+  }
+});
+
 // --- WORKSHEET & QUESTION PAPER ROUTES ---
 
 app.get('/api/worksheets', authenticate(), async (req: AuthRequest, res: Response) => {

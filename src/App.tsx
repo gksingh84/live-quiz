@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { io, type Socket } from 'socket.io-client';
-import { AppWindow, ArrowLeft, ArrowRight, BarChart3, BookOpen, BookOpenCheck, Calculator, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronUp, CircleHelp, Clock3, Copy, Download, ExternalLink, Eye, FileText, KeyRound, ListChecks, Lock, LogOut, Maximize2, Minimize2, Paperclip, Pencil, PenTool, Plus, Printer, Radio, RefreshCw, RotateCcw, Save, Send, ShieldCheck, Sparkles, Trash2, Type, UploadCloud, UserCheck, Users, UserX, X } from 'lucide-react';
+import { AppWindow, ArrowLeft, ArrowRight, BarChart3, BookOpen, BookOpenCheck, Calculator, Calendar, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronUp, CircleHelp, Clock3, Copy, Download, ExternalLink, Eye, FileText, KeyRound, ListChecks, Lock, LogOut, Maximize2, Minimize2, Paperclip, Pencil, PenTool, Plus, Printer, Radio, RefreshCw, RotateCcw, Save, Send, ShieldCheck, Sparkles, Trash2, Type, UploadCloud, UserCheck, Users, UserX, X } from 'lucide-react';
 import { PublicPortal } from './components/PublicPortal';
 import { AuthModal, type AuthMode } from './components/AuthModal';
 import { SuperAdminConsole } from './components/SuperAdminConsole';
 import { ClassroomChatWidget } from './components/ClassroomChatWidget';
+import { ClassroomCalendar } from './components/ClassroomCalendar';
 
 type Mode = 'LIVE' | 'SELF_PACED';
 type QuestionType = 'MCQ' | 'FILL_BLANK' | 'TRUE_FALSE' | 'SOLVE';
@@ -343,13 +344,13 @@ export function Login({ mode, onSubmit, error }: { mode: 'admin' | 'student'; on
 }
 
 function TeacherApp({ user, onSignOut, notice, setNotice, onViewPortal }: { user: User; onSignOut: () => void; notice: string; setNotice: (text: string) => void; onViewPortal?: () => void }) {
-  const [tab, setTabState] = useState<'overview' | 'quizzes' | 'worksheets' | 'whiteboard' | 'students' | 'results' | 'ai_settings'>(() => {
+  const [tab, setTabState] = useState<'overview' | 'quizzes' | 'worksheets' | 'calendar' | 'whiteboard' | 'students' | 'results' | 'ai_settings'>(() => {
     const saved = localStorage.getItem('teacher_active_tab') as any;
-    const validTabs = ['overview', 'quizzes', 'worksheets', 'whiteboard', 'students', 'results', 'ai_settings'];
+    const validTabs = ['overview', 'quizzes', 'worksheets', 'calendar', 'whiteboard', 'students', 'results', 'ai_settings'];
     return validTabs.includes(saved) ? saved : 'overview';
   });
 
-  const setTab = (newTab: 'overview' | 'quizzes' | 'worksheets' | 'whiteboard' | 'students' | 'results' | 'ai_settings') => {
+  const setTab = (newTab: 'overview' | 'quizzes' | 'worksheets' | 'calendar' | 'whiteboard' | 'students' | 'results' | 'ai_settings') => {
     setTabState(newTab);
     localStorage.setItem('teacher_active_tab', newTab);
   };
@@ -434,6 +435,7 @@ function TeacherApp({ user, onSignOut, notice, setNotice, onViewPortal }: { user
       <div className="sidebar-label">TEACHER SPACE</div>
       <nav className="side-nav" aria-label="Teacher navigation">
         <NavItem active={tab === 'overview'} icon={<BarChart3 size={17} />} label="Overview" onClick={() => setTab('overview')} />
+        <NavItem active={tab === 'calendar'} icon={<Calendar size={17} />} label="Calendar & Reminders" onClick={() => setTab('calendar')} />
         <NavItem active={tab === 'whiteboard'} icon={<PenTool size={17} />} label="Whiteboard" onClick={() => setTab('whiteboard')} />
         <NavItem active={tab === 'quizzes'} icon={<BookOpenCheck size={17} />} label="Quizzes and Worksheets" count={quizzes.length} onClick={() => setTab('quizzes')} />
         <NavItem active={tab === 'worksheets'} icon={<FileText size={17} />} label="Question Papers" count={worksheets.length} onClick={() => setTab('worksheets')} />
@@ -483,6 +485,7 @@ function TeacherApp({ user, onSignOut, notice, setNotice, onViewPortal }: { user
                 <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                   <button className="button button-primary" onClick={() => setTab('quizzes')}><Plus size={17} /> Create a Quiz</button>
                   <button className="button button-secondary" onClick={() => setTab('worksheets')}><FileText size={17} /> Create a Question Paper</button>
+                  <button className="button button-secondary" onClick={() => setTab('calendar')}><Calendar size={17} /> Calendar & Reminders</button>
                 </div>
               </div>
 
@@ -564,6 +567,7 @@ function TeacherApp({ user, onSignOut, notice, setNotice, onViewPortal }: { user
         })()}
         {tab === 'quizzes' && <QuizManager quizzes={quizzes} selectedQuiz={selectedQuiz} setSelectedQuiz={setSelectedQuiz} liveQuiz={liveQuiz} refresh={refresh} setNotice={setNotice} onNavigateToAISettings={() => setTab('ai_settings')} />}
         {tab === 'worksheets' && <WorksheetsPanel setNotice={setNotice} onNavigateToAISettings={() => setTab('ai_settings')} />}
+        {tab === 'calendar' && <ClassroomCalendar user={user} readOnly={false} />}
         {tab === 'whiteboard' && <TeacherWhiteboard setNotice={setNotice} />}
         {tab === 'students' && <StudentManager students={students} refresh={refresh} setNotice={setNotice} onBackToClassroom={() => setTab('overview')} />}
         {tab === 'results' && <ResultsPanel quizzes={quizzes} selectedQuiz={selectedQuiz} setSelectedQuiz={setSelectedQuiz} results={results} distribution={distribution} onExport={exportCsv} onResetAttempt={handleResetAttempt} />}
@@ -856,7 +860,7 @@ function TeacherWhiteboard({ setNotice }: { setNotice: (msg: string) => void }) 
   );
 }
 
-function tabLabel(tab: string) { return ({ overview: 'Overview', whiteboard: 'Online Whiteboard', quizzes: 'Quizzes and Worksheets', worksheets: 'Question Papers', students: 'Students', results: 'Results', ai_settings: 'AI Settings' } as Record<string, string>)[tab] ?? tab; }
+function tabLabel(tab: string) { return ({ overview: 'Overview', calendar: 'Calendar & Reminders', whiteboard: 'Online Whiteboard', quizzes: 'Quizzes and Worksheets', worksheets: 'Question Papers', students: 'Students', results: 'Results', ai_settings: 'AI Settings' } as Record<string, string>)[tab] ?? tab; }
 function NavItem({ active, icon, label, count, onClick }: { active: boolean; icon: React.ReactNode; label: string; count?: number; onClick: () => void }) { return <button className={`nav-item ${active ? 'active' : ''}`} onClick={onClick}>{icon}<span>{label}</span>{count !== undefined && <small>{count}</small>}</button>; }
 function Metric({ label, value, icon, tint }: { label: string; value: number | string; icon: React.ReactNode; tint: string }) { return <div className="metric"><div className={`metric-icon ${tint}`}>{icon}</div><div><span>{label}</span><strong>{value}</strong></div><div className="metric-trend">↗</div></div>; }
 
@@ -2260,13 +2264,13 @@ function ResultsPanel({ quizzes, selectedQuiz, setSelectedQuiz, results, distrib
 }
 
 function StudentApp({ user, onSignOut, notice, setNotice, onViewPortal }: { user: User; onSignOut: () => void; notice: string; setNotice: (text: string) => void; onViewPortal?: () => void }) {
-  const [tab, setTabState] = useState<'open' | 'quiz_history' | 'paper_history'>(() => {
+  const [tab, setTabState] = useState<'open' | 'quiz_history' | 'paper_history' | 'calendar'>(() => {
     const saved = localStorage.getItem('student_active_tab') as any;
-    const validTabs = ['open', 'quiz_history', 'paper_history'];
+    const validTabs = ['open', 'quiz_history', 'paper_history', 'calendar'];
     return validTabs.includes(saved) ? saved : 'open';
   });
 
-  const setTab = (newTab: 'open' | 'quiz_history' | 'paper_history') => {
+  const setTab = (newTab: 'open' | 'quiz_history' | 'paper_history' | 'calendar') => {
     setTabState(newTab);
     localStorage.setItem('student_active_tab', newTab);
   };
@@ -2683,6 +2687,12 @@ function StudentApp({ user, onSignOut, notice, setNotice, onViewPortal }: { user
             label="Question Papers History"
             onClick={() => setTab('paper_history')}
           />
+          <NavItem
+            active={tab === 'calendar'}
+            icon={<Calendar size={17} />}
+            label="Class Calendar"
+            onClick={() => setTab('calendar')}
+          />
           {onViewPortal && (
             <NavItem
               active={false}
@@ -2710,7 +2720,7 @@ function StudentApp({ user, onSignOut, notice, setNotice, onViewPortal }: { user
       <main className="workspace">
         <header className="topbar">
           <div className="breadcrumb">
-            Your classroom <span>/</span> <strong>{tab === 'open' ? 'Open Classroom' : tab === 'quiz_history' ? 'Quiz History' : 'Question Papers History'}</strong>
+            Your classroom <span>/</span> <strong>{tab === 'open' ? 'Open Classroom' : tab === 'quiz_history' ? 'Quiz History' : tab === 'paper_history' ? 'Question Papers History' : 'Class Calendar & Reminders'}</strong>
           </div>
           <div className="topbar-actions">
             {onViewPortal && (
@@ -2734,7 +2744,7 @@ function StudentApp({ user, onSignOut, notice, setNotice, onViewPortal }: { user
           </div>
         </header>
 
-        <section className="student-home-content" style={{ maxWidth: '960px', padding: '32px 40px' }}>
+        <section className="student-home-content" style={{ maxWidth: tab === 'calendar' ? '1280px' : '960px', padding: tab === 'calendar' ? '24px 32px' : '32px 40px' }}>
           {error && <div className="inline-error" style={{ marginBottom: '20px' }}>{error}</div>}
 
           {loading ? (
@@ -2840,6 +2850,13 @@ function StudentApp({ user, onSignOut, notice, setNotice, onViewPortal }: { user
               {tab === 'paper_history' && (
                 <div style={{ marginTop: '0' }}>
                   <StudentWorksheetHistorySection setNotice={setNotice} />
+                </div>
+              )}
+
+              {/* 4. CLASS CALENDAR & REMINDERS */}
+              {tab === 'calendar' && (
+                <div style={{ marginTop: '0' }}>
+                  <ClassroomCalendar user={user} readOnly={true} />
                 </div>
               )}
             </>
