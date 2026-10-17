@@ -109,9 +109,29 @@ export function ClassroomChatWidget({ user }: ClassroomChatWidgetProps) {
 
   // Active direct message key (studentId for teacher, 'teacher' for student)
   const activeDirectKey = user.role === 'student' ? 'teacher' : (selectedStudentId || '');
-  const currentMessages = activeTab === 'everyone'
+  const rawMessages = activeTab === 'everyone'
     ? everyoneMessages
     : (activeDirectKey ? (directMessagesMap[activeDirectKey] || []) : []);
+
+  // Filter out any duplicate messages by id or temp duplicates
+  const currentMessages = React.useMemo(() => {
+    const seen = new Set<string>();
+    const result: ChatMessageItem[] = [];
+    for (const m of rawMessages) {
+      if (!m.id) continue;
+      // If we see a temp message but we already have a real message with the same sender and content, skip temp
+      if (m.id.startsWith('temp_')) {
+        const hasRealDuplicate = rawMessages.some(
+          (other) => !other.id.startsWith('temp_') && other.senderId === m.senderId && other.content === m.content
+        );
+        if (hasRealDuplicate) continue;
+      }
+      if (seen.has(m.id)) continue;
+      seen.add(m.id);
+      result.push(m);
+    }
+    return result;
+  }, [rawMessages]);
 
   // 1. Fetch Classroom Peers (Teacher & Students)
   const loadPeers = useCallback(async () => {
@@ -202,7 +222,19 @@ export function ClassroomChatWidget({ user }: ClassroomChatWidgetProps) {
 
     socket.on('chat:message', (newMsg: ChatMessageItem) => {
       if (newMsg.channel === 'everyone') {
-        setEveryoneMessages((prev) => (prev.some((m) => m.id === newMsg.id) ? prev : [...prev, newMsg]));
+        setEveryoneMessages((prev) => {
+          if (prev.some((m) => m.id === newMsg.id)) return prev;
+          // Reconcile optimistic temp message sent by me
+          const tempIdx = prev.findIndex(
+            (m) => m.id.startsWith('temp_') && m.senderId === newMsg.senderId && m.content === newMsg.content
+          );
+          if (tempIdx !== -1) {
+            const next = [...prev];
+            next[tempIdx] = newMsg;
+            return next;
+          }
+          return [...prev, newMsg];
+        });
         if (!isOpenRef.current || isMinimizedRef.current || activeTabRef.current !== 'everyone') {
           setUnreadEveryone((c) => c + 1);
         }
@@ -211,6 +243,15 @@ export function ClassroomChatWidget({ user }: ClassroomChatWidgetProps) {
         setDirectMessagesMap((prev) => {
           const list = prev[key] || [];
           if (list.some((m) => m.id === newMsg.id)) return prev;
+          // Reconcile optimistic temp message sent by me
+          const tempIdx = list.findIndex(
+            (m) => m.id.startsWith('temp_') && m.senderId === newMsg.senderId && m.content === newMsg.content
+          );
+          if (tempIdx !== -1) {
+            const next = [...list];
+            next[tempIdx] = newMsg;
+            return { ...prev, [key]: next };
+          }
           return { ...prev, [key]: [...list, newMsg] };
         });
 
@@ -344,12 +385,26 @@ export function ClassroomChatWidget({ user }: ClassroomChatWidgetProps) {
       if (res.ok && data.message) {
         // Reconcile optimistic message with server id
         if (activeTab === 'everyone') {
-          setEveryoneMessages((prev) => prev.map((m) => (m.id === tempId ? data.message : m)));
+          setEveryoneMessages((prev) => {
+            if (prev.some((m) => m.id === data.message.id)) {
+              return prev.filter((m) => m.id !== tempId);
+            }
+            return prev.map((m) => (m.id === tempId ? data.message : m));
+          });
         } else if (activeDirectKey) {
-          setDirectMessagesMap((prev) => ({
-            ...prev,
-            [activeDirectKey]: (prev[activeDirectKey] || []).map((m) => (m.id === tempId ? data.message : m)),
-          }));
+          setDirectMessagesMap((prev) => {
+            const list = prev[activeDirectKey] || [];
+            if (list.some((m) => m.id === data.message.id)) {
+              return {
+                ...prev,
+                [activeDirectKey]: list.filter((m) => m.id !== tempId),
+              };
+            }
+            return {
+              ...prev,
+              [activeDirectKey]: list.map((m) => (m.id === tempId ? data.message : m)),
+            };
+          });
         }
       } else {
         // Revert optimistic message on error
