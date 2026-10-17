@@ -7341,7 +7341,7 @@ button:disabled {
 .whiteboard-frame-container {
   width: 100%;
   height: calc(100vh - 126px);
-  min-height: 750px;
+  min-height: 480px;
   background: #0f172a;
   border-radius: 12px;
   overflow: hidden;
@@ -7350,13 +7350,22 @@ button:disabled {
   position: relative;
 }
 
+@media (max-width: 1024px) {
+  .whiteboard-frame-container {
+    height: calc(100vh - 110px);
+    min-height: 440px;
+  }
+}
+
 .whiteboard-frame-container--fullscreen {
   position: fixed;
   inset: 0;
   top: 48px;
   width: 100vw;
   height: calc(100vh - 48px);
-  min-height: 100vh;
+  min-height: calc(100vh - 48px);
+  max-height: calc(100vh - 48px);
+  overflow: hidden;
   border-radius: 0;
   border: none;
   z-index: 99998;

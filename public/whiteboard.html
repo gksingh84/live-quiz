@@ -7,6 +7,8 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="vendor/jspdf.umd.min.js"></script>
+    <script src="vendor/jszip.min.js"></script>
     <style>
 *,
 *::before,
@@ -51,8 +53,9 @@ body {
   display: flex;
   flex-direction: column;
   width: 100%;
-  height: 100vh;
-  max-height: 100vh;
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
   background-color: #f8fafc;
 }
 
@@ -70,11 +73,9 @@ body {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
   flex-shrink: 0;
   gap: 0.28rem;
-  z-index: 20;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
+  z-index: 100;
+  position: relative;
+  overflow: visible !important;
 }
 
 .top-bar::-webkit-scrollbar {
@@ -264,31 +265,52 @@ body {
 .export-dropdown {
   position: relative;
   display: inline-block;
+  z-index: 1000;
 }
 
 .export-dropdown__menu {
   display: none;
-  position: absolute;
-  top: 100%;
-  right: 0;
-  margin-top: 0.4rem;
-  min-width: 210px;
-  padding: 0.4rem;
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  box-shadow: 0 12px 28px -4px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.04);
-  z-index: 100;
+  position: fixed;
+  min-width: 250px;
+  max-height: calc(100vh - 60px);
+  overflow-y: auto;
+  padding: 0.5rem;
+  background: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  border-radius: 10px !important;
+  box-shadow: 0 20px 45px -4px rgba(15, 23, 42, 0.25), 0 0 0 1px rgba(15, 23, 42, 0.08) !important;
+  z-index: 99999999 !important;
 }
 
 .export-dropdown.is-open .export-dropdown__menu {
-  display: block;
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+
+.export-dropdown__header {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #94a3b8;
+  padding: 0.4rem 0.75rem 0.2rem;
+  user-select: none;
+}
+
+.export-dropdown__divider {
+  height: 1px;
+  background: #f1f5f9;
+  margin: 0.3rem 0;
 }
 
 .export-dropdown__item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
   width: 100%;
-  padding: 0.45rem 0.85rem;
+  padding: 0.45rem 0.75rem;
   border: none;
   border-radius: 6px;
   background: none;
@@ -304,6 +326,33 @@ body {
 .export-dropdown__item:hover {
   background: #f0f9ff;
   color: #0284c7;
+}
+
+.whiteboard-toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  background: #0f172a;
+  color: #f8fafc;
+  padding: 10px 18px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 99999;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(10px);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.whiteboard-toast.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
 }
 
 /* ==========================================================================
@@ -718,6 +767,8 @@ body {
   flex-shrink: 0;
   gap: 0.5rem;
   z-index: 20;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .bottom-bar__left,
@@ -726,6 +777,10 @@ body {
   display: flex;
   align-items: center;
   gap: 0.45rem;
+}
+
+.bottom-bar__center {
+  flex-shrink: 0;
 }
 
 .bottom-bar__button {
@@ -801,34 +856,71 @@ body {
 
 .board-type-toggle {
   display: inline-flex;
+  align-items: center;
   border-radius: 8px;
   background-color: #f1f5f9;
   border: 1px solid #e2e8f0;
-  padding: 0.15rem;
-  gap: 0.15rem;
+  padding: 0.16rem;
+  gap: 0.18rem;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .board-type-button {
   appearance: none;
   border: none;
   border-radius: 6px;
-  padding: 0.28rem 0.65rem;
+  padding: 0.3rem 0.65rem;
+  min-height: 28px;
   font-family: inherit;
   font-size: 0.75rem;
   font-weight: 500;
   cursor: pointer;
   background-color: transparent;
   color: #64748b;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
   transition: all 0.12s ease;
+  white-space: nowrap;
+  flex-shrink: 0;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
 }
 .board-type-button:hover {
   color: #0f172a;
+  background-color: rgba(255, 255, 255, 0.6);
 }
 .board-type-button--active {
   background-color: #ffffff !important;
   color: #0f172a !important;
   font-weight: 600;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+.board-color-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.dot-white {
+  background-color: #ffffff;
+  border: 1px solid #cbd5e1;
+}
+.dot-black {
+  background-color: #020617;
+  border: 1px solid #334155;
+}
+.dot-green {
+  background-color: #064e3b;
+  border: 1px solid #059669;
+}
+.dot-ruled {
+  background: repeating-linear-gradient(to bottom, #fefdf6, #fefdf6 2px, #0e7490 2px, #0e7490 3px);
+  border: 1px solid #cbd5e1;
 }
 
 #zoomOutButton, #zoomInButton {
@@ -849,6 +941,22 @@ body {
   text-align: center;
 }
 
+@media (max-width: 900px) {
+  .bottom-bar {
+    padding: 0.28rem 0.5rem;
+    gap: 0.35rem;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .bottom-bar__label {
+    display: none;
+  }
+  .board-type-button {
+    padding: 0.28rem 0.52rem;
+    font-size: 0.72rem;
+  }
+}
+
 @media (max-width: 768px) {
   .top-bar {
     padding-inline: 0.5rem;
@@ -862,10 +970,17 @@ body {
     min-width: 72px;
   }
   .bottom-bar {
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .bottom-bar::-webkit-scrollbar {
+    display: none;
   }
   .pages-strip {
-    max-width: 170px;
+    max-width: 150px;
+    flex-shrink: 0;
   }
 }
 </style>
@@ -895,10 +1010,25 @@ body {
             Export ▾
           </button>
           <div class="export-dropdown__menu" id="exportMenu" aria-hidden="true">
+            <div class="export-dropdown__header">📄 PDF Document</div>
+            <button type="button" class="export-dropdown__item" id="exportPDF">PDF (all pages)</button>
+            <button type="button" class="export-dropdown__item" id="exportPDFCurrentPage">PDF (current page)</button>
+
+            <div class="export-dropdown__divider"></div>
+            <div class="export-dropdown__header">🖼️ JPG Image</div>
+            <button type="button" class="export-dropdown__item" id="exportJPGCurrent">JPG (current page)</button>
+            <button type="button" class="export-dropdown__item" id="exportJPGAll">JPG (all pages - ZIP)</button>
+
+            <div class="export-dropdown__divider"></div>
+            <div class="export-dropdown__header">📝 Word Document</div>
+            <button type="button" class="export-dropdown__item" id="exportWordAll">Word (.docx - all pages)</button>
+            <button type="button" class="export-dropdown__item" id="exportWordCurrent">Word (.docx - current page)</button>
+
+            <div class="export-dropdown__divider"></div>
+            <div class="export-dropdown__header">🎨 PNG / Selection</div>
             <button type="button" class="export-dropdown__item" id="exportFullPage">Full page (PNG)</button>
             <button type="button" class="export-dropdown__item" id="exportCurrentView">Current view (PNG)</button>
             <button type="button" class="export-dropdown__item" id="exportSelection">Selection only (PNG)</button>
-            <button type="button" class="export-dropdown__item" id="exportPDF">PDF (all pages)</button>
           </div>
         </div>
         <button class="top-bar__button" id="zoomResetButton" title="Reset zoom to 100%">
@@ -944,6 +1074,15 @@ body {
           <span>Height (px):</span>
           <input type="number" id="customHeightInput" value="3000" min="1000" max="20000" step="500" style="width:75px;background:#111827;color:#fff;border:1px solid #4b5563;border-radius:4px;padding:0.2rem 0.4rem;font-size:0.85rem" />
         </span>
+        <label style="display:inline-flex;align-items:center;gap:0.4rem;font-size:0.85rem">
+          <span>Board background:</span>
+          <select id="settingsBoardTypeSelect" style="background:#111827;color:#fff;border:1px solid #4b5563;border-radius:4px;padding:0.2rem 0.5rem;font-size:0.85rem;cursor:pointer">
+            <option value="white">Whiteboard</option>
+            <option value="black">Blackboard</option>
+            <option value="green">Green board</option>
+            <option value="ruled">Ruled notebook</option>
+          </select>
+        </label>
         <button type="button" class="clear-confirm__btn clear-confirm__btn--cancel" style="margin-left:auto" id="settingsCloseBtn">Close</button>
       </div>
       <div id="deletePageConfirm" class="clear-confirm" aria-hidden="true">
@@ -1014,19 +1153,21 @@ body {
           <span class="bottom-bar__label">Board type:</span>
           <div class="board-type-toggle" id="boardTypeToggle">
             <button
+              type="button"
               class="board-type-button board-type-button--active"
               data-board="white"
+              title="Whiteboard (Clean White)"
             >
-              Whiteboard
+              <span class="board-color-dot dot-white"></span> Whiteboard
             </button>
-            <button class="board-type-button" data-board="black">
-              Blackboard
+            <button type="button" class="board-type-button" data-board="black" title="Blackboard (Dark Chalkboard)">
+              <span class="board-color-dot dot-black"></span> Blackboard
             </button>
-            <button class="board-type-button" data-board="green">
-              Green board
+            <button type="button" class="board-type-button" data-board="green" title="Green board (Traditional Classroom)">
+              <span class="board-color-dot dot-green"></span> Green board
             </button>
-            <button class="board-type-button" data-board="ruled">
-              Ruled notebook
+            <button type="button" class="board-type-button" data-board="ruled" title="Ruled notebook (School Lined Pages)">
+              <span class="board-color-dot dot-ruled"></span> Ruled notebook
             </button>
           </div>
         </div>
@@ -1728,6 +1869,9 @@ body {
   function getCachedImage(dataUrl) {
     if (!imageCache.has(dataUrl)) {
       const img = new Image();
+      if (!dataUrl.startsWith("data:") && !dataUrl.startsWith("blob:")) {
+        img.crossOrigin = "anonymous";
+      }
       img.src = dataUrl;
       imageCache.set(dataUrl, img);
     }
@@ -2410,32 +2554,143 @@ body {
     ctx.restore();
   }
 
-  function exportPageAsPNG() {
-    const scale = window.devicePixelRatio || 1;
-    const logicalW = boardCanvas ? boardCanvas.width / (scale * zoom) : 800;
-    const logicalH = boardCanvas ? boardCanvas.height / (scale * zoom) : 600;
-    const exportScale = 2;
-    const canvas = document.createElement("canvas");
-    canvas.width = logicalW * exportScale;
-    canvas.height = logicalH * exportScale;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.scale(exportScale, exportScale);
-    drawPageContent(ctx, getBoardBackgroundColor(), { skipTimeWidgets: true });
-    const dataUrl = canvas.toDataURL("image/png");
-    const a = document.createElement("a");
-    a.href = dataUrl;
-    a.download = `Gauravs-Board-page-${currentPageIndex + 1}.png`;
-    a.click();
+  let exportToastTimer = null;
+  function showExportToast(msg, duration = 3000) {
+    let toast = document.getElementById("whiteboardToast");
+    if (!toast) {
+      toast = document.createElement("div");
+      toast.id = "whiteboardToast";
+      toast.className = "whiteboard-toast";
+      document.body.appendChild(toast);
+    }
+    toast.textContent = msg;
+    toast.classList.add("is-visible");
+    if (exportToastTimer) clearTimeout(exportToastTimer);
+    if (duration > 0) {
+      exportToastTimer = setTimeout(() => {
+        toast.classList.remove("is-visible");
+      }, duration);
+    }
   }
 
-  /** Draw a specific page to ctx (for export). w,h in logical units. No connectors. */
+  function downloadDataUrl(dataUrl, filename) {
+    const a = document.createElement("a");
+    a.style.display = "none";
+    a.href = dataUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      if (a.parentNode) a.parentNode.removeChild(a);
+    }, 1200);
+  }
+
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.style.display = "none";
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      if (a.parentNode) a.parentNode.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 2500);
+  }
+
+  function loadScriptWithFallback(localSrc, cdnSrc, onLoad, onError) {
+    const s1 = document.createElement("script");
+    s1.src = localSrc;
+    s1.onload = () => {
+      onLoad();
+    };
+    s1.onerror = () => {
+      console.warn("Local script failed:", localSrc, "attempting CDN fallback:", cdnSrc);
+      const s2 = document.createElement("script");
+      s2.src = cdnSrc;
+      s2.onload = onLoad;
+      s2.onerror = onError;
+      document.head.appendChild(s2);
+    };
+    document.head.appendChild(s1);
+  }
+
+  function getJsPdfConstructor() {
+    if (window.jspdf && window.jspdf.jsPDF) return window.jspdf.jsPDF;
+    if (typeof jsPDF !== "undefined") return jsPDF;
+    if (window.jsPDF) return window.jsPDF;
+    return null;
+  }
+
+  function ensurePdfLib(callback) {
+    if (getJsPdfConstructor()) {
+      callback();
+      return;
+    }
+    loadScriptWithFallback(
+      "vendor/jspdf.umd.min.js",
+      "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js",
+      () => {
+        if (getJsPdfConstructor()) {
+          callback();
+        } else {
+          alert("PDF library loaded but constructor was not ready.");
+        }
+      },
+      () => {
+        alert("Could not load PDF library. Please check your internet connection.");
+      }
+    );
+  }
+
+  function getZipConstructor() {
+    if (typeof JSZip !== "undefined") return JSZip;
+    if (window.JSZip) return window.JSZip;
+    return null;
+  }
+
+  function ensureZipLib(callback) {
+    if (getZipConstructor()) {
+      callback();
+      return;
+    }
+    loadScriptWithFallback(
+      "vendor/jszip.min.js",
+      "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js",
+      () => {
+        if (getZipConstructor()) {
+          callback();
+        } else {
+          alert("Zip library loaded but constructor was not ready.");
+        }
+      },
+      () => {
+        alert("Could not load Word/Zip export library. Please check your internet connection.");
+      }
+    );
+  }
+
+  function getPageLogicalSize(pageIndex) {
+    const scale = window.devicePixelRatio || 1;
+    const standardW = boardCanvas ? boardCanvas.width / (scale * zoom) : 1200;
+    const container = boardCanvas ? boardCanvas.closest(".canvas-container") : null;
+    const standardH = container ? container.clientHeight : (boardCanvas ? boardCanvas.height / (scale * zoom) : 800);
+    const page = pages[pageIndex];
+    if (!page) return { w: standardW, h: standardH };
+    const h = page.height || standardH;
+    return { w: standardW, h: Math.max(standardH, h) };
+  }
+
+  /** Draw a specific page to ctx (for export). w,h in logical units. */
   function drawPageContentForExport(ctx, pageIndex, w, h, backgroundColor) {
     const page = pages[pageIndex];
     ctx.fillStyle = backgroundColor;
     ctx.fillRect(0, 0, w, h);
     if (!page) return;
-    if (currentBoardType === "ruled") {
+    if (page.gridVisible) {
+      drawGridBackground(ctx, w, h);
+    } else if (currentBoardType === "ruled") {
       drawRuledBackground(ctx, w, h);
     }
     if (page.background && page.background.dataUrl) {
@@ -2486,6 +2741,343 @@ body {
     });
   }
 
+  function renderPageToCanvas(pageIndex, exportScale = 2) {
+    const { w: logicalW, h: logicalH } = getPageLogicalSize(pageIndex);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(logicalW * exportScale);
+    canvas.height = Math.round(logicalH * exportScale);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.scale(exportScale, exportScale);
+    const bg = getBoardBackgroundColor();
+    drawPageContentForExport(ctx, pageIndex, logicalW, logicalH, bg);
+    return { canvas, logicalW, logicalH, exportScale };
+  }
+
+  function exportCurrentPageAsJPG() {
+    try {
+      showExportToast("Rendering page to JPG...");
+      const rendered = renderPageToCanvas(currentPageIndex, 2);
+      if (!rendered) return;
+      const dataUrl = rendered.canvas.toDataURL("image/jpeg", 0.95);
+      downloadDataUrl(dataUrl, `Whiteboard-Page-${currentPageIndex + 1}.jpg`);
+      showExportToast(`Page ${currentPageIndex + 1} exported to JPG!`);
+    } catch (err) {
+      console.error("JPG export error:", err);
+      alert("Could not export JPG: " + err.message);
+    }
+  }
+
+  function exportAllPagesAsJPG() {
+    if (pages.length <= 1) {
+      exportCurrentPageAsJPG();
+      return;
+    }
+    ensureZipLib(async () => {
+      try {
+        showExportToast("Exporting all pages to JPG...");
+        const ZipClass = getZipConstructor();
+        const zip = new ZipClass();
+        for (let i = 0; i < pages.length; i++) {
+          showExportToast(`Rendering JPG ${i + 1} of ${pages.length}...`);
+          const rendered = renderPageToCanvas(i, 2);
+          if (!rendered) continue;
+          const dataUrl = rendered.canvas.toDataURL("image/jpeg", 0.95);
+          const base64 = dataUrl.split(",")[1];
+          const pageNumStr = String(i + 1).padStart(2, "0");
+          zip.file(`Whiteboard-Page-${pageNumStr}.jpg`, base64, { base64: true });
+        }
+        showExportToast("Creating ZIP archive...");
+        const blob = await zip.generateAsync({ type: "blob" });
+        downloadBlob(blob, "Whiteboard-All-Pages-JPG.zip");
+        showExportToast("All pages downloaded as JPG zip!");
+      } catch (err) {
+        console.error("JPG all pages export error:", err);
+        showExportToast("Downloading pages individually...");
+        for (let i = 0; i < pages.length; i++) {
+          const rendered = renderPageToCanvas(i, 2);
+          if (!rendered) continue;
+          const dataUrl = rendered.canvas.toDataURL("image/jpeg", 0.95);
+          setTimeout(() => {
+            downloadDataUrl(dataUrl, `Whiteboard-Page-${i + 1}.jpg`);
+          }, i * 350);
+        }
+      }
+    });
+  }
+
+  function exportToPDF(allPages = true) {
+    ensurePdfLib(() => {
+      try {
+        showExportToast(allPages ? "Preparing PDF (all pages)..." : "Preparing PDF (current page)...");
+        const JsPdfClass = getJsPdfConstructor();
+        if (!JsPdfClass) {
+          throw new Error("PDF library constructor not found.");
+        }
+        const pagesToExport = allPages ? pages.map((_, i) => i) : [currentPageIndex];
+        let pdf = null;
+        for (let step = 0; step < pagesToExport.length; step++) {
+          const pageIdx = pagesToExport[step];
+          showExportToast(`Processing page ${step + 1} of ${pagesToExport.length} for PDF...`);
+          const rendered = renderPageToCanvas(pageIdx, 2);
+          if (!rendered) continue;
+          const { canvas, logicalW, logicalH } = rendered;
+          const orientation = logicalW > logicalH ? "landscape" : "portrait";
+          if (!pdf) {
+            pdf = new JsPdfClass({
+              orientation,
+              unit: "pt",
+              format: "a4",
+            });
+          } else {
+            pdf.addPage("a4", orientation);
+          }
+          const pdfW = pdf.internal.pageSize.getWidth();
+          const pdfH = pdf.internal.pageSize.getHeight();
+          const scaleToFit = Math.min(pdfW / logicalW, pdfH / logicalH);
+          const drawW = logicalW * scaleToFit;
+          const drawH = logicalH * scaleToFit;
+          const offsetX = (pdfW - drawW) / 2;
+          const offsetY = (pdfH - drawH) / 2;
+          const imgData = canvas.toDataURL("image/jpeg", 0.92);
+          pdf.addImage(imgData, "JPEG", offsetX, offsetY, drawW, drawH);
+        }
+        if (!pdf) {
+          alert("No pages could be exported to PDF.");
+          return;
+        }
+        showExportToast("Generating PDF download...");
+        const filename = allPages ? "Whiteboard-All-Pages.pdf" : `Whiteboard-Page-${currentPageIndex + 1}.pdf`;
+        const blob = pdf.output("blob");
+        downloadBlob(blob, filename);
+        showExportToast(allPages ? "All pages exported to PDF!" : `Page ${currentPageIndex + 1} exported to PDF!`);
+      } catch (err) {
+        console.error("PDF export error:", err);
+        alert("Failed to export PDF: " + err.message);
+      }
+    });
+  }
+
+  async function exportToWord(allPages = true) {
+    ensureZipLib(async () => {
+      try {
+        showExportToast(allPages ? "Preparing Word document (.docx - all pages)..." : "Preparing Word document (.docx - current page)...");
+        const ZipClass = getZipConstructor();
+        const zip = new ZipClass();
+        const pagesToExport = allPages ? pages.map((_, i) => i) : [currentPageIndex];
+        const pageImages = [];
+
+        for (let s = 0; s < pagesToExport.length; s++) {
+          const pageIdx = pagesToExport[s];
+          showExportToast(`Rendering page ${s + 1} of ${pagesToExport.length} for Word...`);
+          const rendered = renderPageToCanvas(pageIdx, 2);
+          if (!rendered) continue;
+          const { canvas, logicalW, logicalH } = rendered;
+          const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+          const base64Data = dataUrl.split(",")[1];
+          pageImages.push({
+            pageNumber: pageIdx + 1,
+            base64: base64Data,
+            w: logicalW,
+            h: logicalH
+          });
+        }
+
+        if (pageImages.length === 0) {
+          alert("No pages found to export.");
+          return;
+        }
+
+        const contentTypesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="jpeg" ContentType="image/jpeg"/>
+  <Default Extension="jpg" ContentType="image/jpeg"/>
+  <Default Extension="png" ContentType="image/png"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>`;
+
+        const rootRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`;
+
+        let docRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">`;
+        pageImages.forEach((img, idx) => {
+          docRelsXml += `\n  <Relationship Id="rIdImg${idx + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image${idx + 1}.jpeg"/>`;
+        });
+        docRelsXml += `\n</Relationships>`;
+
+        const exportDate = new Date().toLocaleDateString(undefined, { dateStyle: "long", timeStyle: "short" });
+        const maxEmuW = 6000000;
+        const maxEmuH = 7800000;
+
+        let bodyXml = `
+    <w:p>
+      <w:pPr>
+        <w:jc w:val="center"/>
+        <w:spacing w:before="100" w:after="140"/>
+      </w:pPr>
+      <w:r>
+        <w:rPr>
+          <w:rFonts w:ascii="Segoe UI" w:hAnsi="Segoe UI"/>
+          <w:b/>
+          <w:sz w:val="40"/>
+          <w:color w:val="0F172A"/>
+        </w:rPr>
+        <w:t>Whiteboard Notes</w:t>
+      </w:r>
+    </w:p>
+    <w:p>
+      <w:pPr>
+        <w:jc w:val="center"/>
+        <w:spacing w:after="300"/>
+      </w:pPr>
+      <w:r>
+        <w:rPr>
+          <w:rFonts w:ascii="Segoe UI" w:hAnsi="Segoe UI"/>
+          <w:sz w:val="18"/>
+          <w:color w:val="64748B"/>
+        </w:rPr>
+        <w:t>Exported on ${exportDate} • ${pageImages.length} Page(s)</w:t>
+      </w:r>
+    </w:p>`;
+
+        pageImages.forEach((img, idx) => {
+          const imgId = idx + 1;
+          const aspect = (img.w || 1200) / (img.h || 800);
+          let emuW = maxEmuW;
+          let emuH = Math.round(emuW / aspect);
+          if (emuH > maxEmuH) {
+            emuH = maxEmuH;
+            emuW = Math.round(emuH * aspect);
+          }
+
+          bodyXml += `
+    <w:p>
+      <w:pPr>
+        <w:spacing w:before="120" w:after="120"/>
+      </w:pPr>
+      <w:r>
+        <w:rPr>
+          <w:rFonts w:ascii="Segoe UI" w:hAnsi="Segoe UI"/>
+          <w:b/>
+          <w:sz w:val="24"/>
+          <w:color w:val="334155"/>
+        </w:rPr>
+        <w:t>Page ${img.pageNumber}</w:t>
+      </w:r>
+    </w:p>
+    <w:p>
+      <w:pPr>
+        <w:jc w:val="center"/>
+        <w:spacing w:after="240"/>
+      </w:pPr>
+      <w:r>
+        <w:drawing>
+          <wp:inline distT="0" distB="0" distL="0" distR="0">
+            <wp:extent cx="${emuW}" cy="${emuH}"/>
+            <wp:docPr id="${imgId}" name="Whiteboard Page ${img.pageNumber}"/>
+            <wp:cNvGraphicFramePr>
+              <a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/>
+            </wp:cNvGraphicFramePr>
+            <a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+              <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                <pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                  <pic:nvPicPr>
+                    <pic:cNvPr id="${imgId}" name="Whiteboard Page ${img.pageNumber}"/>
+                    <pic:cNvPicPr/>
+                  </pic:nvPicPr>
+                  <pic:blipFill>
+                    <a:blip r:embed="rIdImg${imgId}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>
+                    <a:stretch>
+                      <a:fillRect/>
+                    </a:stretch>
+                  </pic:blipFill>
+                  <pic:spPr>
+                    <a:xfrm>
+                      <a:off x="0" y="0"/>
+                      <a:ext cx="${emuW}" cy="${emuH}"/>
+                    </a:xfrm>
+                    <a:prstGeom prst="rect">
+                      <a:avLst/>
+                    </a:prstGeom>
+                  </pic:spPr>
+                </pic:pic>
+              </a:graphicData>
+            </a:graphic>
+          </wp:inline>
+        </w:drawing>
+      </w:r>
+    </w:p>`;
+
+          if (idx < pageImages.length - 1) {
+            bodyXml += `
+    <w:p>
+      <w:r>
+        <w:br w:type="page"/>
+      </w:r>
+    </w:p>`;
+          }
+        });
+
+        bodyXml += `
+    <w:sectPr>
+      <w:pgSz w:w="11906" w:h="16838"/>
+      <w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720"/>
+    </w:sectPr>`;
+
+        const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+            xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+            xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+            xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+  <w:body>${bodyXml}
+  </w:body>
+</w:document>`;
+
+        zip.file("[Content_Types].xml", contentTypesXml);
+        zip.folder("_rels").file(".rels", rootRelsXml);
+        const wordFolder = zip.folder("word");
+        wordFolder.file("document.xml", documentXml);
+        wordFolder.folder("_rels").file("document.xml.rels", docRelsXml);
+        const mediaFolder = wordFolder.folder("media");
+        pageImages.forEach((img, idx) => {
+          mediaFolder.file(`image${idx + 1}.jpeg`, img.base64, { base64: true });
+        });
+
+        showExportToast("Generating Word file (.docx)...");
+        const blob = await zip.generateAsync({
+          type: "blob",
+          mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        });
+
+        const filename = allPages ? "Whiteboard-Notes-All-Pages.docx" : `Whiteboard-Notes-Page-${currentPageIndex + 1}.docx`;
+        downloadBlob(blob, filename);
+        showExportToast(allPages ? "Word document (.docx) downloaded!" : `Page ${currentPageIndex + 1} exported to Word!`);
+      } catch (err) {
+        console.error("Word export error:", err);
+        alert("Failed to export Word document: " + err.message);
+      }
+    });
+  }
+
+  function exportPageAsPNG() {
+    try {
+      const rendered = renderPageToCanvas(currentPageIndex, 2);
+      if (!rendered) return;
+      const dataUrl = rendered.canvas.toDataURL("image/png");
+      downloadDataUrl(dataUrl, `Whiteboard-page-${currentPageIndex + 1}.png`);
+      showExportToast(`Page ${currentPageIndex + 1} exported to PNG!`);
+    } catch (err) {
+      console.error("Export PNG error:", err);
+      alert("Could not export PNG: " + err.message);
+    }
+  }
+
   function getSelectionBounds() {
     let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
     const page = pages[currentPageIndex];
@@ -2513,120 +3105,74 @@ body {
   }
 
   function exportCurrentViewAsPNG() {
-    const container = boardCanvas.closest(".canvas-container");
-    const scale = window.devicePixelRatio || 1;
-    const logicalW = boardCanvas ? boardCanvas.width / (scale * zoom) : 800;
-    const logicalH = boardCanvas ? boardCanvas.height / (scale * zoom) : 600;
-    const scrollTop = container ? container.scrollTop : 0;
-    const viewHeight = container ? container.clientHeight : 600;
-    const viewWidth = container ? container.clientWidth : logicalW;
-    const logicalViewY = scrollTop / zoom;
-    const logicalViewH = viewHeight / zoom;
-    const logicalViewW = Math.min(logicalW, viewWidth / zoom);
-    const exportScale = 2;
-    const fullCanvas = document.createElement("canvas");
-    fullCanvas.width = logicalW * exportScale;
-    fullCanvas.height = logicalH * exportScale;
-    const fullCtx = fullCanvas.getContext("2d");
-    if (!fullCtx) return;
-    fullCtx.scale(exportScale, exportScale);
-    drawPageContent(fullCtx, getBoardBackgroundColor(), { skipTimeWidgets: true });
-    const outCanvas = document.createElement("canvas");
-    outCanvas.width = logicalViewW * exportScale;
-    outCanvas.height = logicalViewH * exportScale;
-    const outCtx = outCanvas.getContext("2d");
-    if (!outCtx) return;
-    outCtx.drawImage(
-      fullCanvas,
-      0, logicalViewY * exportScale, logicalViewW * exportScale, logicalViewH * exportScale,
-      0, 0, outCanvas.width, outCanvas.height
-    );
-    const dataUrl = outCanvas.toDataURL("image/png");
-    const a = document.createElement("a");
-    a.href = dataUrl;
-    a.download = `Gauravs-Board-view-page-${currentPageIndex + 1}.png`;
-    a.click();
+    try {
+      const container = boardCanvas.closest(".canvas-container");
+      const scale = window.devicePixelRatio || 1;
+      const logicalW = boardCanvas ? boardCanvas.width / (scale * zoom) : 800;
+      const logicalH = boardCanvas ? boardCanvas.height / (scale * zoom) : 600;
+      const scrollTop = container ? container.scrollTop : 0;
+      const viewHeight = container ? container.clientHeight : 600;
+      const viewWidth = container ? container.clientWidth : logicalW;
+      const logicalViewY = scrollTop / zoom;
+      const logicalViewH = viewHeight / zoom;
+      const logicalViewW = Math.min(logicalW, viewWidth / zoom);
+      const exportScale = 2;
+      const fullCanvas = document.createElement("canvas");
+      fullCanvas.width = logicalW * exportScale;
+      fullCanvas.height = logicalH * exportScale;
+      const fullCtx = fullCanvas.getContext("2d");
+      if (!fullCtx) return;
+      fullCtx.scale(exportScale, exportScale);
+      drawPageContent(fullCtx, getBoardBackgroundColor(), { skipTimeWidgets: true });
+      const outCanvas = document.createElement("canvas");
+      outCanvas.width = logicalViewW * exportScale;
+      outCanvas.height = logicalViewH * exportScale;
+      const outCtx = outCanvas.getContext("2d");
+      if (!outCtx) return;
+      outCtx.drawImage(
+        fullCanvas,
+        0, logicalViewY * exportScale, logicalViewW * exportScale, logicalViewH * exportScale,
+        0, 0, outCanvas.width, outCanvas.height
+      );
+      const dataUrl = outCanvas.toDataURL("image/png");
+      downloadDataUrl(dataUrl, `Whiteboard-view-page-${currentPageIndex + 1}.png`);
+      showExportToast("Current view exported to PNG!");
+    } catch (err) {
+      console.error("Export view error:", err);
+      alert("Could not export current view: " + err.message);
+    }
   }
 
   function exportSelectionAsPNG() {
-    const bounds = getSelectionBounds();
-    if (!bounds || (selectedShapes.length === 0 && selectedTexts.length === 0)) {
-      alert("Select one or more shapes or text items first.");
-      return;
+    try {
+      const bounds = getSelectionBounds();
+      if (!bounds || (selectedShapes.length === 0 && selectedTexts.length === 0)) {
+        alert("Select one or more shapes or text items first.");
+        return;
+      }
+      const pad = 16;
+      const exportScale = 2;
+      const w = (bounds.w + pad * 2) * exportScale;
+      const h = (bounds.h + pad * 2) * exportScale;
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.scale(exportScale, exportScale);
+      ctx.translate(pad - bounds.x, pad - bounds.y);
+      ctx.fillStyle = getBoardBackgroundColor();
+      ctx.fillRect(bounds.x, bounds.y, bounds.w, bounds.h);
+      selectedShapes.forEach((shape) => drawShape(ctx, shape, false));
+      selectedTexts.forEach((item) => drawTextItem(ctx, item, false));
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      const dataUrl = canvas.toDataURL("image/png");
+      downloadDataUrl(dataUrl, `Whiteboard-selection.png`);
+      showExportToast("Selection exported to PNG!");
+    } catch (err) {
+      console.error("Export selection error:", err);
+      alert("Could not export selection: " + err.message);
     }
-    const pad = 16;
-    const exportScale = 2;
-    const w = (bounds.w + pad * 2) * exportScale;
-    const h = (bounds.h + pad * 2) * exportScale;
-    const canvas = document.createElement("canvas");
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.scale(exportScale, exportScale);
-    ctx.translate(pad - bounds.x, pad - bounds.y);
-    ctx.fillStyle = getBoardBackgroundColor();
-    ctx.fillRect(bounds.x, bounds.y, bounds.w, bounds.h);
-    selectedShapes.forEach((shape) => drawShape(ctx, shape, false));
-    selectedTexts.forEach((item) => drawTextItem(ctx, item, false));
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    const dataUrl = canvas.toDataURL("image/png");
-    const a = document.createElement("a");
-    a.href = dataUrl;
-    a.download = `Gauravs-Board-selection.png`;
-    a.click();
-  }
-
-  function exportToPDF() {
-    if (typeof jspdf !== "undefined" && jspdf.jsPDF) {
-      doExportToPDF();
-      return;
-    }
-    const script = document.createElement("script");
-    script.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
-    script.onload = () => {
-      doExportToPDF();
-    };
-    script.onerror = () => {
-      alert("Could not load PDF library. Check your internet connection.");
-    };
-    document.head.appendChild(script);
-  }
-
-  function doExportToPDF() {
-    const scale = window.devicePixelRatio || 1;
-    const logicalW = boardCanvas ? boardCanvas.width / (scale * zoom) : 800;
-    const logicalH = boardCanvas ? boardCanvas.height / (scale * zoom) : 600;
-    const exportScale = 2;
-    const orientation = logicalW > logicalH ? "landscape" : "portrait";
-    const { jsPDF } = window.jspdf;
-    const pdf = new jsPDF({
-      orientation,
-      unit: "pt",
-      format: "a4",
-    });
-    const pdfW = pdf.internal.pageSize.getWidth();
-    const pdfH = pdf.internal.pageSize.getHeight();
-    const scaleToFit = Math.min(pdfW / logicalW, pdfH / logicalH);
-    const drawW = logicalW * scaleToFit;
-    const drawH = logicalH * scaleToFit;
-    const offsetX = (pdfW - drawW) / 2;
-    const offsetY = (pdfH - drawH) / 2;
-    const tempCanvas = document.createElement("canvas");
-    tempCanvas.width = logicalW * exportScale;
-    tempCanvas.height = logicalH * exportScale;
-    const tempCtx = tempCanvas.getContext("2d");
-    if (!tempCtx) return;
-    for (let i = 0; i < pages.length; i++) {
-      if (i > 0) pdf.addPage("a4", orientation);
-      tempCtx.setTransform(1, 0, 0, 1, 0, 0);
-      tempCtx.scale(exportScale, exportScale);
-      const bg = getBoardBackgroundColor();
-      drawPageContentForExport(tempCtx, i, logicalW, logicalH, bg);
-      const imgData = tempCanvas.toDataURL("image/png");
-      pdf.addImage(imgData, "PNG", offsetX, offsetY, drawW, drawH);
-    }
-    pdf.save("Gauravs-Board.pdf");
   }
 
   function drawAllStrokes(ctx) {
@@ -3441,7 +3987,9 @@ body {
         ? "Whiteboard"
         : currentBoardType === "black"
         ? "Blackboard"
-        : "Green board";
+        : currentBoardType === "green"
+        ? "Green board"
+        : "Ruled notebook";
     boardInfoLabel.textContent = `${typeLabel} - Page ${
       currentPageIndex + 1
     }`;
@@ -3453,13 +4001,31 @@ body {
   }
 
   function setBoardType(type) {
+    if (!type) return;
     currentBoardType = type;
-    Array.from(
-      boardTypeToggle.querySelectorAll(".board-type-button")
-    ).forEach((btn) => {
-      const isActive = btn.getAttribute("data-board") === type;
-      btn.classList.toggle("board-type-button--active", isActive);
-    });
+    const page = pages[currentPageIndex];
+    if (page) {
+      page.boardType = type;
+    }
+    try {
+      localStorage.setItem("whiteboard_board_type", type);
+    } catch (_) {}
+
+    if (boardTypeToggle) {
+      Array.from(
+        boardTypeToggle.querySelectorAll(".board-type-button")
+      ).forEach((btn) => {
+        const isActive = btn.getAttribute("data-board") === type;
+        btn.classList.toggle("board-type-button--active", isActive);
+        btn.setAttribute("aria-pressed", isActive ? "true" : "false");
+      });
+    }
+
+    const settingsSelect = document.getElementById("settingsBoardTypeSelect");
+    if (settingsSelect) {
+      settingsSelect.value = type;
+    }
+
     // Adjust default drawing colors based on board background
     if (type === "black" || type === "green") {
       penSettings.color = "#ffffff";
@@ -3472,6 +4038,15 @@ body {
     }
     updateBoardAppearance();
     updateBoardInfoLabel();
+
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ type: "BOARD_TYPE_CHANGED", boardType: type }, "*");
+      }
+    } catch (_) {}
+
+    clearTimeout(savePagesTimeout);
+    savePagesTimeout = setTimeout(savePagesToStorage, 800);
   }
 
   function setZoom(newZoom) {
@@ -6363,7 +6938,7 @@ body {
     const isInfinite = localStorage.getItem("whiteboard_infinite_scroll") === "true";
     const container = boardCanvas?.closest(".canvas-container");
     const standardH = container ? Math.max(container.clientHeight, 600) : 800;
-    const newPage = { strokes: [], shapes: [], texts: [], widgets: [], background: null, height: isInfinite ? 2400 : standardH, infiniteScroll: isInfinite };
+    const newPage = { strokes: [], shapes: [], texts: [], widgets: [], background: null, height: isInfinite ? 2400 : standardH, infiniteScroll: isInfinite, boardType: currentBoardType };
     if (curPage) {
       (curPage.widgets || []).filter((w) => w.type === "clock" || w.type === "timer" || w.type === "stopwatch").forEach((w) => {
         newPage.widgets.push(cloneTimeWidgetForOtherPage(w));
@@ -6386,13 +6961,18 @@ body {
     buttons.forEach((btn, i) => {
       btn.classList.toggle("page-thumbnail--active", i === index);
     });
-    updateBoardInfoLabel();
-    resizeCanvas();
+    const page = pages[currentPageIndex];
+    if (page && page.boardType && page.boardType !== currentBoardType) {
+      setBoardType(page.boardType);
+    } else {
+      updateBoardInfoLabel();
+      resizeCanvas();
+      updateBoardAppearance();
+    }
     const container = boardCanvas?.closest(".canvas-container");
     if (container) container.scrollTop = 0;
     if (typeof hideSettingsBanner === "function") hideSettingsBanner();
     if (typeof updateInfiniteToggleBtn === "function") updateInfiniteToggleBtn();
-    updateBoardAppearance();
     if (currentTool === "select" && propertiesContent) handleToolSelection("select");
   }
 
@@ -8221,15 +8801,61 @@ body {
     });
   }
 
-  if (boardTypeToggle) {
-    boardTypeToggle.addEventListener("click", (event) => {
-      const target = event.target;
-      if (!(target instanceof HTMLElement)) return;
-      const type = target.getAttribute("data-board");
-      if (!type) return;
-      setBoardType(type);
+  function bindBoardToggleEvents(container) {
+    if (!container) return;
+    const getBoardTypeFromEvent = (evt) => {
+      const target = evt.target;
+      if (!target) return null;
+      const btn = target.closest ? target.closest("[data-board]") : null;
+      return btn ? btn.getAttribute("data-board") : null;
+    };
+
+    container.addEventListener("click", (evt) => {
+      const type = getBoardTypeFromEvent(evt);
+      if (type) setBoardType(type);
+    });
+
+    container.addEventListener("pointerup", (evt) => {
+      if (evt.pointerType === "touch" || evt.pointerType === "pen") {
+        const type = getBoardTypeFromEvent(evt);
+        if (type) setBoardType(type);
+      }
+    });
+
+    container.addEventListener("touchend", (evt) => {
+      const touch = evt.changedTouches && evt.changedTouches[0];
+      if (touch) {
+        const el = document.elementFromPoint(touch.clientX, touch.clientY);
+        const btn = el ? el.closest("[data-board]") : null;
+        if (btn) {
+          const type = btn.getAttribute("data-board");
+          if (type) setBoardType(type);
+        }
+      }
+    }, { passive: true });
+
+    container.querySelectorAll(".board-type-button").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const type = btn.getAttribute("data-board");
+        if (type) setBoardType(type);
+      });
+      btn.addEventListener("pointerup", (e) => {
+        if (e.pointerType === "touch" || e.pointerType === "pen") {
+          e.stopPropagation();
+          const type = btn.getAttribute("data-board");
+          if (type) setBoardType(type);
+        }
+      });
     });
   }
+
+  bindBoardToggleEvents(boardTypeToggle);
+
+  document.getElementById("settingsBoardTypeSelect")?.addEventListener("change", (e) => {
+    const type = e.target.value;
+    if (type) setBoardType(type);
+  });
 
   zoomInButton?.addEventListener("click", () => {
     setZoom(zoom + 0.1);
@@ -8256,31 +8882,105 @@ body {
     const exportBtn = document.getElementById("exportButton");
     const menu = document.getElementById("exportMenu");
     if (!dropdown || !exportBtn || !menu) return;
+
+    function positionMenu() {
+      const rect = exportBtn.getBoundingClientRect();
+      menu.style.position = "fixed";
+      menu.style.top = Math.round(rect.bottom + 6) + "px";
+      menu.style.right = Math.max(10, Math.round(window.innerWidth - rect.right)) + "px";
+      menu.style.left = "auto";
+      menu.style.zIndex = "99999999";
+    }
+
+    function toggleMenu(forceOpen) {
+      const currentlyOpen = dropdown.classList.contains("is-open");
+      const shouldOpen = forceOpen !== undefined ? forceOpen : !currentlyOpen;
+      if (shouldOpen) {
+        positionMenu();
+        dropdown.classList.add("is-open");
+        menu.style.display = "block";
+        menu.style.visibility = "visible";
+        menu.style.opacity = "1";
+        menu.setAttribute("aria-hidden", "false");
+      } else {
+        dropdown.classList.remove("is-open");
+        menu.style.display = "none";
+        menu.setAttribute("aria-hidden", "true");
+      }
+    }
+
     exportBtn.addEventListener("click", (e) => {
+      e.preventDefault();
       e.stopPropagation();
-      dropdown.classList.toggle("is-open");
-      menu.setAttribute("aria-hidden", dropdown.classList.contains("is-open") ? "false" : "true");
+      toggleMenu();
     });
-    document.addEventListener("click", () => {
-      dropdown.classList.remove("is-open");
-      menu.setAttribute("aria-hidden", "true");
+
+    document.addEventListener("click", (e) => {
+      if (!dropdown.contains(e.target)) {
+        toggleMenu(false);
+      }
     });
-    dropdown.addEventListener("click", (e) => e.stopPropagation());
-    document.getElementById("exportFullPage")?.addEventListener("click", () => {
-      dropdown.classList.remove("is-open");
+
+    menu.addEventListener("click", (e) => {
+      e.stopPropagation();
+    });
+
+    window.addEventListener("resize", () => {
+      if (dropdown.classList.contains("is-open")) {
+        positionMenu();
+      }
+    });
+
+    window.addEventListener("scroll", () => {
+      if (dropdown.classList.contains("is-open")) {
+        positionMenu();
+      }
+    }, true);
+
+    document.getElementById("exportPDF")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleMenu(false);
+      exportToPDF(true);
+    });
+    document.getElementById("exportPDFCurrentPage")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleMenu(false);
+      exportToPDF(false);
+    });
+    document.getElementById("exportJPGCurrent")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleMenu(false);
+      exportCurrentPageAsJPG();
+    });
+    document.getElementById("exportJPGAll")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleMenu(false);
+      exportAllPagesAsJPG();
+    });
+    document.getElementById("exportWordAll")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleMenu(false);
+      exportToWord(true);
+    });
+    document.getElementById("exportWordCurrent")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleMenu(false);
+      exportToWord(false);
+    });
+    document.getElementById("exportFullPage")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleMenu(false);
       exportPageAsPNG();
     });
-    document.getElementById("exportCurrentView")?.addEventListener("click", () => {
-      dropdown.classList.remove("is-open");
+    document.getElementById("exportCurrentView")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleMenu(false);
       exportCurrentViewAsPNG();
     });
-    document.getElementById("exportSelection")?.addEventListener("click", () => {
-      dropdown.classList.remove("is-open");
+    document.getElementById("exportSelection")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleMenu(false);
       exportSelectionAsPNG();
-    });
-    document.getElementById("exportPDF")?.addEventListener("click", () => {
-      dropdown.classList.remove("is-open");
-      exportToPDF();
     });
   })();
 
@@ -8548,6 +9248,9 @@ body {
   function updateFullScreenButton() {
     if (!fullScreenButton) return;
     const full = isFullScreen();
+    if (appRoot) {
+      appRoot.classList.toggle("is-fullscreen", full);
+    }
     fullScreenButton.textContent = full ? "Exit full screen" : "Full screen";
     fullScreenButton.title = full ? "Exit full screen" : "Enter full screen";
     resizeCanvas();
@@ -8604,8 +9307,14 @@ body {
 
   window.addEventListener("message", (e) => {
     if (e.data && (e.data.type === "FULLSCREEN_CHANGE" || e.data.type === "RESIZE_CANVAS")) {
+      if (appRoot && typeof e.data.isFullscreen === "boolean") {
+        appRoot.classList.toggle("is-fullscreen", e.data.isFullscreen);
+      }
       resizeCanvas();
       updateBoardAppearance();
+    }
+    if (e.data && e.data.type === "SET_BOARD_TYPE" && e.data.boardType) {
+      setBoardType(e.data.boardType);
     }
   });
 
@@ -8762,7 +9471,10 @@ body {
 
   loadPagesFromStorage().then(() => {
     resizeCanvas();
-    setBoardType("white");
+    const currentPage = pages[currentPageIndex];
+    const savedType = (currentPage && currentPage.boardType) ||
+      localStorage.getItem("whiteboard_board_type") || "white";
+    setBoardType(savedType);
     updateZoomLabel();
     if (typeof updateInfiniteToggleBtn === "function") updateInfiniteToggleBtn();
     handleToolSelection("select");
@@ -8771,6 +9483,7 @@ body {
 
 
 </script>
+    <div id="whiteboardToast" class="whiteboard-toast" aria-live="polite"></div>
   </body>
 </html>
 

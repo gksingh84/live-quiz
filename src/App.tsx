@@ -757,7 +757,9 @@ function TeacherWhiteboard({ setNotice }: { setNotice: (msg: string) => void }) 
       iframe.contentWindow.postMessage({ type: 'FULLSCREEN_CHANGE', isFullscreen }, '*');
     }
 
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
   }, [isFullscreen]);
 
   return (
