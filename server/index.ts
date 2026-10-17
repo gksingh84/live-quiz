@@ -2582,6 +2582,78 @@ app.post('/api/chat/messages', authenticate(), async (req: AuthRequest, res: Res
   }
 });
 
+app.delete('/api/chat/messages/:id', authenticate(), async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ error: 'Message ID is required.' });
+
+    const message = await (prisma as any).chatMessage.findUnique({
+      where: { id },
+    });
+
+    if (!message) {
+      return res.status(404).json({ error: 'Message not found or already deleted.' });
+    }
+
+    const session = req.session!;
+    const role = session.role;
+    let allowed = false;
+
+    if (role === 'superadmin') {
+      allowed = true;
+    } else if (role === 'teacher' || role === 'admin') {
+      const teacherId = await resolveTeacherIdForChat(req);
+      if (teacherId && message.teacherId === teacherId) {
+        allowed = true;
+      }
+    } else if (role === 'student') {
+      // Students (kids) can delete messages sent by themselves if sent by mistake
+      if (message.senderId === session.id) {
+        allowed = true;
+      }
+    }
+
+    if (!allowed) {
+      return res.status(403).json({ error: 'You are not authorized to delete this message.' });
+    }
+
+    await (prisma as any).chatMessage.delete({
+      where: { id },
+    });
+
+    // Remove from in-memory cache
+    const cacheKey = message.channel === 'everyone'
+      ? `${message.teacherId}:everyone`
+      : `${message.teacherId}:direct:${message.studentId}`;
+    if (chatMemoryCache.has(cacheKey)) {
+      const cached = chatMemoryCache.get(cacheKey) || [];
+      chatMemoryCache.set(
+        cacheKey,
+        cached.filter((m: any) => m.id !== id)
+      );
+    }
+
+    // Broadcast real-time deletion to relevant rooms
+    const deletePayload = {
+      messageId: id,
+      channel: message.channel,
+      studentId: message.studentId,
+      teacherId: message.teacherId,
+    };
+
+    if (message.channel === 'everyone') {
+      io.to(`chat:${message.teacherId}:everyone`).emit('chat:message_deleted', deletePayload);
+    } else if (message.studentId) {
+      io.to(`chat:${message.teacherId}:direct:${message.studentId}`).emit('chat:message_deleted', deletePayload);
+      io.to(`chat:${message.teacherId}:teacher`).emit('chat:message_deleted', deletePayload);
+    }
+
+    return res.json({ ok: true, deletedId: id });
+  } catch (error) {
+    errorResponse(res, error);
+  }
+});
+
 app.delete('/api/chat/messages', authenticate(['admin', 'teacher', 'superadmin']), async (req: AuthRequest, res: Response) => {
   try {
     const teacherId = await resolveTeacherIdForChat(req);

@@ -13,7 +13,8 @@ import {
   GraduationCap,
   Star,
   CheckCheck,
-  Trash2
+  Trash2,
+  ChevronDown
 } from 'lucide-react';
 
 export interface ChatMessageItem {
@@ -234,6 +235,28 @@ export function ClassroomChatWidget({ user }: ClassroomChatWidgetProps) {
       loadedTabsRef.current.clear();
     });
 
+    socket.on('chat:message_deleted', ({ messageId, channel, studentId }: { messageId: string; channel: string; studentId?: string | null }) => {
+      if (channel === 'everyone') {
+        setEveryoneMessages((prev) => prev.filter((m) => m.id !== messageId));
+      } else {
+        const key = user.role === 'student' ? 'teacher' : (studentId || '');
+        if (key) {
+          setDirectMessagesMap((prev) => ({
+            ...prev,
+            [key]: (prev[key] || []).filter((m) => m.id !== messageId),
+          }));
+        } else {
+          setDirectMessagesMap((prev) => {
+            const next = { ...prev };
+            for (const k of Object.keys(next)) {
+              next[k] = (next[k] || []).filter((m) => m.id !== messageId);
+            }
+            return next;
+          });
+        }
+      }
+    });
+
     socket.on('chat:direct_notification', ({ studentId }: { studentId: string }) => {
       if (user.role !== 'student') {
         if (!isOpenRef.current || isMinimizedRef.current || activeTabRef.current !== 'direct' || selectedStudentIdRef.current !== studentId) {
@@ -368,6 +391,44 @@ export function ClassroomChatWidget({ user }: ClassroomChatWidgetProps) {
       }
     } catch {
       alert('Failed to clear chat messages.');
+    }
+  }
+
+  // Delete individual message (Teachers/admins can delete any/own message, kids can delete own messages sent by mistake)
+  async function handleDeleteMessage(msg: ChatMessageItem) {
+    if (!msg.id) return;
+    const isTemp = msg.id.startsWith('temp_');
+    if (!window.confirm('Delete this message?')) return;
+
+    // Optimistically remove from state immediately
+    if (msg.channel === 'everyone') {
+      setEveryoneMessages((prev) => prev.filter((m) => m.id !== msg.id));
+    } else {
+      const key = user.role === 'student' ? 'teacher' : (msg.studentId || selectedStudentId || '');
+      if (key) {
+        setDirectMessagesMap((prev) => ({
+          ...prev,
+          [key]: (prev[key] || []).filter((m) => m.id !== msg.id),
+        }));
+      }
+    }
+
+    if (isTemp) return;
+
+    try {
+      const res = await fetch(`/api/chat/messages/${encodeURIComponent(msg.id)}`, {
+        method: 'DELETE',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert(data.error || 'Failed to delete message.');
+        // Re-fetch to sync state if deletion failed
+        void fetchChannelMessages(activeTab, selectedStudentId);
+      }
+    } catch (err) {
+      console.error('Error deleting message:', err);
     }
   }
 
@@ -553,35 +614,40 @@ export function ClassroomChatWidget({ user }: ClassroomChatWidgetProps) {
                     </div>
                   ) : (
                     <div className="chat-direct-teacher-selector">
-                      <span className="chat-selector-label">Chat with Kid:</span>
-                      {students.length === 0 ? (
-                        <span className="text-xs text-slate-400">No students enrolled yet</span>
-                      ) : (
-                        <div className="chat-student-chips-container">
-                          {students.map((st) => {
-                            const isSelected = selectedStudentId === st.id;
-                            const unread = studentUnreadMap[st.id] || 0;
-                            return (
-                              <button
-                                key={st.id}
-                                type="button"
-                                className={`chat-student-chip ${isSelected ? 'chat-student-chip--active' : ''}`}
-                                onClick={() => {
-                                  setSelectedStudentId(st.id);
-                                }}
-                              >
-                                <span className="chat-chip-avatar">
-                                  {st.name.slice(0, 1).toUpperCase()}
-                                </span>
-                                <span className="chat-chip-name">{st.name}</span>
-                                {unread > 0 && (
-                                  <span className="chat-chip-unread-dot" title={`${unread} new messages`} />
-                                )}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
+                      <div className="chat-selector-row">
+                        <label htmlFor="chatStudentSelect" className="chat-selector-label">
+                          Select Student:
+                        </label>
+                        {students.length === 0 ? (
+                          <span className="chat-no-students-label">No students enrolled yet</span>
+                        ) : (
+                          <div className="chat-student-select-wrap">
+                            <select
+                              id="chatStudentSelect"
+                              className="chat-student-dropdown"
+                              value={selectedStudentId || ''}
+                              onChange={(e) => setSelectedStudentId(e.target.value)}
+                            >
+                              {students.map((st) => {
+                                const unread = studentUnreadMap[st.id] || 0;
+                                const unreadLabel = unread > 0 ? ` (${unread} new)` : '';
+                                const gradeLabel = st.grade ? ` • Grade ${st.grade}` : '';
+                                return (
+                                  <option key={st.id} value={st.id}>
+                                    {st.name}{gradeLabel}{unreadLabel}
+                                  </option>
+                                );
+                              })}
+                            </select>
+                            <ChevronDown size={14} className="chat-select-chevron" />
+                          </div>
+                        )}
+                        {selectedStudentId && (studentUnreadMap[selectedStudentId] || 0) > 0 ? (
+                          <span className="chat-selected-unread-badge" title="Unread messages from this student">
+                            {studentUnreadMap[selectedStudentId]} new
+                          </span>
+                        ) : null}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -632,6 +698,7 @@ export function ClassroomChatWidget({ user }: ClassroomChatWidgetProps) {
                   currentMessages.map((m, idx) => {
                     const isMine = m.senderId === user.id;
                     const isTeacherMsg = m.senderRole === 'teacher';
+                    const canDelete = isMine || user.role === 'teacher' || user.role === 'admin' || user.role === 'superadmin';
                     const timeStr = new Date(m.createdAt).toLocaleTimeString([], {
                       hour: '2-digit',
                       minute: '2-digit',
@@ -667,12 +734,38 @@ export function ClassroomChatWidget({ user }: ClassroomChatWidgetProps) {
                             </div>
                           )}
 
-                          <div className={`chat-bubble ${isMine ? 'chat-bubble--mine' : 'chat-bubble--theirs'}`}>
-                            <p className="chat-text">{m.content}</p>
-                            <span className="chat-time">
-                              {timeStr}
-                              {isMine && <CheckCheck size={11} className="chat-check" />}
-                            </span>
+                          <div className="chat-bubble-and-actions">
+                            {isMine && canDelete && (
+                              <button
+                                type="button"
+                                className="chat-msg-delete-btn"
+                                onClick={() => handleDeleteMessage(m)}
+                                title="Delete message sent by mistake"
+                                aria-label="Delete message sent by mistake"
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            )}
+
+                            <div className={`chat-bubble ${isMine ? 'chat-bubble--mine' : 'chat-bubble--theirs'}`}>
+                              <p className="chat-text">{m.content}</p>
+                              <span className="chat-time">
+                                {timeStr}
+                                {isMine && <CheckCheck size={11} className="chat-check" />}
+                              </span>
+                            </div>
+
+                            {!isMine && canDelete && (
+                              <button
+                                type="button"
+                                className="chat-msg-delete-btn"
+                                onClick={() => handleDeleteMessage(m)}
+                                title="Delete message"
+                                aria-label="Delete message"
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            )}
                           </div>
                         </div>
                       </div>
